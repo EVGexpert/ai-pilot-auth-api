@@ -1,6 +1,17 @@
 import { findSitesByUser, findSiteByUserAndUrl, findSiteById, createSite, deleteSite, allSites, updateSiteToken, getSiteMemory, setSiteMemory, formatSiteMemory } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 
+/** Хелпер: fetch с таймаутом */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function authGuard(request, reply) {
   const auth = request.headers.authorization
   if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Missing token' })
@@ -64,7 +75,7 @@ export default async function sitesRoutes(app) {
 
     try {
       const cleanUrl = siteUrl.replace(/\/+$/, '')
-      const resp = await fetch(`${cleanUrl}/wp-json/aipilot/v1/agent/verify-code?code=${encodeURIComponent(code)}`)
+      const resp = await fetchWithTimeout(`${cleanUrl}/wp-json/aipilot/v1/agent/verify-code?code=${encodeURIComponent(code)}`, {}, 10000)
       if (!resp.ok) return reply.status(404).send({ error: 'Code invalid or expired' })
 
       const data = await resp.json()
@@ -113,9 +124,9 @@ export default async function sitesRoutes(app) {
     let siteName = name || url
     let wpVersion = null
     try {
-      const resp = await fetch(`${url}/wp-json/aipilot/v1/site`, {
+      const resp = await fetchWithTimeout(`${url}/wp-json/aipilot/v1/site`, {
         headers: { 'X-AI-Pilot-Token': apiToken }
-      })
+      }, 10000)
       if (resp.ok) {
         const data = await resp.json()
         siteName = data.name || siteName
@@ -194,10 +205,10 @@ export default async function sitesRoutes(app) {
 
     try {
       const scanUrl = `${url.replace(/\/+$/, '')}/wp-json/aipilot/v1/agent/scan`
-      const resp = await fetch(scanUrl, {
+      const resp = await fetchWithTimeout(scanUrl, {
         method: 'GET',
         headers: { 'X-AI-Pilot-Token': token }
-      })
+      }, 10000)
 
       if (!resp.ok) {
         const text = await resp.text()
@@ -241,9 +252,9 @@ export default async function sitesRoutes(app) {
 
     try {
       const url = site.url.replace(/\/+$/, '')
-      const resp = await fetch(`${url}/wp-json/aipilot/v1/agent/memory`, {
+      const resp = await fetchWithTimeout(`${url}/wp-json/aipilot/v1/agent/memory`, {
         headers: { 'X-AI-Pilot-Token': site.api_token }
-      })
+      }, 10000)
       if (resp.ok) {
         return reply.send(await resp.json())
       }

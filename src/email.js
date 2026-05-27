@@ -25,9 +25,9 @@ export async function sendVerificationEmail(email, code) {
   const transport = getTransporter()
 
   if (!transport) {
-    console.log(`[DEV] Verification code for ${email}: ${code}`)
-    // В dev-режиме просто логируем код
-    return
+    // Без SMTP — код не логируем, только факт отправки (безопасность)
+    console.log(`[DEV] Verification would be sent to ${email} (SMTP not configured)`)
+    throw new Error('SMTP not configured — cannot send verification email')
   }
 
   await transport.sendMail({

@@ -2,6 +2,18 @@ import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, f
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION } from '../config/prompt.js'
 
+/** Хелпер: fetch с таймаутом */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    return res
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 // Регистрируем обработчики для фоновых задач
 registerJobHandler('refresh_context', async (job) => {
   const { siteUrl, apiToken } = JSON.parse(job.payload_json)
@@ -30,14 +42,14 @@ registerJobHandler('sync_wp_memory', async (job) => {
   const { siteUrl, apiToken, message, response, agentId } = JSON.parse(job.payload_json)
   if (!apiToken || apiToken === 'pending') return
   const memoryUrl = siteUrl.replace(/\/+$/, '') + '/wp-json/aipilot/v1/agent/memory'
-  const resp = await fetch(memoryUrl, {
+  const resp = await fetchWithTimeout(memoryUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-AI-Pilot-Token': apiToken },
     body: JSON.stringify({
       action: 'client_message', summary: message.slice(0, 200),
       details: { response: (response || '').slice(0, 500), agentId }, agent: 'client'
     })
-  })
+  }, 5000)
   if (!resp.ok) throw new Error('WP memory sync: ' + resp.status)
 })
 
@@ -471,7 +483,7 @@ ${siteMemoryBlock}` : ''
     const wpRestUrl = baseUrl + '/wp-json/aipilot/v1'
 
     // 1. Создаём proposal на WP
-    const proposeRes = await fetch(wpRestUrl + '/agent/propose', {
+    const proposeRes = await fetchWithTimeout(wpRestUrl + '/agent/propose', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -485,7 +497,7 @@ ${siteMemoryBlock}` : ''
         },
         summary: action.title || (action.type + ': ' + JSON.stringify(action.target))
       })
-    })
+    }, 15000)
 
     if (!proposeRes.ok) {
       const errText = await proposeRes.text().catch(() => 'Unknown error')
@@ -500,13 +512,13 @@ ${siteMemoryBlock}` : ''
     }
 
     // 2. Подтверждаем proposal — WP выполнит действие
-    const approveRes = await fetch(wpRestUrl + '/agent/approve/' + proposalId, {
+    const approveRes = await fetchWithTimeout(wpRestUrl + '/agent/approve/' + proposalId, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-AI-Pilot-Token': apiToken
       }
-    })
+    }, 15000)
 
     if (!approveRes.ok) {
       const errText = await approveRes.text().catch(() => 'Unknown error')
