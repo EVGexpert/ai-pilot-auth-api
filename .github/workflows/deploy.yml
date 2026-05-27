@@ -1,0 +1,54 @@
+name: Auto Deploy
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          timeout: 120s
+          script: |
+            set -e
+
+            # Папка для auth-api внутри web-chat
+            AUTH_DIR=~/ai-pilot-web-chat/auth-api
+            mkdir -p "$AUTH_DIR"
+
+            # Копируем новые файлы поверх старых
+            cd "$AUTH_DIR"
+            rsync -av --delete --exclude='node_modules' --exclude='.git' "$GITHUB_WORKSPACE/" "$AUTH_DIR/"
+
+            # Пересобираем и запускаем
+            cd ~/ai-pilot-web-chat
+            docker network create aipilot 2>/dev/null || true
+            docker build -t ai-pilot-auth auth-api/
+            docker rm -f ai-pilot-auth 2>/dev/null || true
+            docker run -d \
+              --name ai-pilot-auth \
+              --restart unless-stopped \
+              --network aipilot \
+              --add-host host.docker.internal:host-gateway \
+              -p 127.0.0.1:3001:3001 \
+              -v /root/ai-pilot-web-chat/auth-data:/app/data \
+              -e PORT=3001 \
+              -e DATABASE_PATH=/app/data/aipilot.db \
+              -e JWT_SECRET=${{ secrets.JWT_SECRET }} \
+              -e GATEWAY_TOKEN=${{ secrets.GATEWAY_TOKEN }} \
+              -e GATEWAY_WS=ws://host.docker.internal:18789 \
+              -e APP_URL=https://pilotsite.ru \
+              -e TZ=Europe/Kaliningrad \
+              ai-pilot-auth
+
+            docker image prune -f
+            echo "✅ Auth API deploy complete: $(date)"
