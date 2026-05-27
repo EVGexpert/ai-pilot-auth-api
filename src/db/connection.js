@@ -225,6 +225,17 @@ if (ver8 < 8) {
 // ============================================================
 // JSON MIGRATION (legacy)
 // ============================================================
+// Восстановление из .migrated файла, если БД пуста
+function recoverFromMigrated() {
+  const migratedPath = JSON_PATH + '.migrated'
+  if (!existsSync(migratedPath)) return false
+  console.log('[DB] Attempting recovery from migrated JSON...')
+  let jsonData
+  try { jsonData = JSON.parse(readFileSync(migratedPath, 'utf-8')) }
+  catch (e) { console.warn('[DB] Failed to parse migrated JSON:', e.message); return false }
+  return jsonData
+}
+
 function migrateFromJson() {
   if (!existsSync(JSON_PATH)) return false
   const count = db.exec('SELECT COUNT(*) as c FROM users')
@@ -255,6 +266,31 @@ function migrateFromJson() {
   } catch (e) { console.error('[DB] Migration failed:', e.message) }
 }
 migrateFromJson()
+
+// Startup guard: если БД пуста после миграций — предупреждение в лог
+const startupCheck = db.exec('SELECT COUNT(*) as c FROM users')
+const userCount = startupCheck.length > 0 && startupCheck[0].values[0][0] ? startupCheck[0].values[0][0] : 0
+if (userCount === 0) {
+  console.warn('[DB] ⚠️  База данных пуста — нет пользователей. Пытаюсь восстановить из migrated...')
+  const recovered = recoverFromMigrated()
+  if (recovered && Array.isArray(recovered.users) && recovered.users.length > 0) {
+    for (const u of recovered.users)
+      db.run('INSERT OR IGNORE INTO users (id, email, password_hash, name, role, email_verified, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+        [u.id, u.email, u.password_hash, u.name || null, u.role || 'client', u.email_verified || 0, u.created_at, u.updated_at])
+    for (const s of (recovered.sites || []))
+      db.run('INSERT OR IGNORE INTO sites (id, user_id, url, name, api_token, wp_version, verified, cached_structure, cached_soul, cached_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [s.id, s.user_id, s.url, s.name || null, s.api_token || null, s.wp_version || null, s.verified || 0,
+         null, null, null, s.created_at, s.updated_at])
+    save()
+    const restored = db.exec('SELECT COUNT(*) as c FROM users')
+    const restoredCount = restored.length > 0 && restored[0].values[0][0] ? restored[0].values[0][0] : 0
+    console.log(`[DB] ✅ Восстановлено ${restoredCount} пользователей из .migrated`)
+  } else {
+    console.warn('[DB] ⚠️  .migrated не найден или пуст. Убедитесь, что volume подключён.')
+  }
+} else {
+  console.log(`[DB] ✅ БД загружена: ${userCount} пользователей`)
+}
 
 // ============================================================
 // SHUTDOWN

@@ -16,21 +16,34 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          timeout: 120s
+          timeout: 180s
           script: |
             set -e
+            echo "🔵 Deploy started: $(date)"
 
-            AUTH_DIR=~/ai-pilot-web-chat/auth-api
-            # Клонируем свежую версию (или обновляем)
-            if [ -d "$AUTH_DIR" ]; then
-              rm -rf "$AUTH_DIR"
+            # Шаг 1: Бэкап БД перед деплоем
+            BACKUP_DIR=~/ai-pilot-web-chat/auth-data/backups
+            mkdir -p "$BACKUP_DIR"
+            DB_FILE=~/ai-pilot-web-chat/auth-data/aipilot.db
+            if [ -f "$DB_FILE" ]; then
+              BACKUP_NAME="aipilot-pre-deploy-$(date +%Y%m%d-%H%M%S).db"
+              cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
+              echo "✅ DB backup: $BACKUP_NAME ($(stat -c%s $DB_FILE) bytes)"
+              # Чистим бэкапы старше 7 дней
+              find "$BACKUP_DIR" -name "aipilot-pre-deploy-*.db" -mtime +7 -delete 2>/dev/null || true
             fi
+
+            # Шаг 2: Клонируем свежий код
+            AUTH_DIR=~/ai-pilot-web-chat/auth-api
+            rm -rf "$AUTH_DIR"
             git clone --depth=1 https://github.com/EVGexpert/ai-pilot-auth-api.git "$AUTH_DIR"
 
-            # Пересобираем и запускаем
+            # Шаг 3: Собираем образ
             cd ~/ai-pilot-web-chat
             docker network create aipilot 2>/dev/null || true
             docker build -t ai-pilot-auth auth-api/
+
+            # Шаг 4: Запускаем новый контейнер
             docker rm -f ai-pilot-auth 2>/dev/null || true
             docker run -d \
               --name ai-pilot-auth \
@@ -48,5 +61,27 @@ jobs:
               -e TZ=Europe/Kaliningrad \
               ai-pilot-auth
 
+            # Шаг 5: Проверка целостности БД после запуска
+            echo "⏳ Проверка БД..."
+            sleep 3
+            # Используем curl к своему же API (без авторизации)
+            STATS=$(curl -sf http://localhost:3001/api/stats 2>/dev/null || echo "")
+            USER_COUNT=$(echo "$STATS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "unknown")
+            echo "👥 Пользователей в БД: $USER_COUNT"
+            if [ "$USER_COUNT" = "0" ] || [ "$USER_COUNT" = "unknown" ]; then
+              LATEST_BACKUP=$(ls -t "$BACKUP_DIR" 2>/dev/null | head -1)
+              if [ -n "$LATEST_BACKUP" ] && [ -f "$BACKUP_DIR/$LATEST_BACKUP" ]; then
+                echo "⚠️  DB пуста! Восстанавливаю из бэкапа: $LATEST_BACKUP"
+                docker stop ai-pilot-auth
+                cp "$BACKUP_DIR/$LATEST_BACKUP" "$DB_FILE"
+                docker start ai-pilot-auth
+                sleep 3
+                NEW_COUNT=$(curl -sf http://localhost:3001/api/stats | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "?")
+                echo "✅ Восстановлено: $NEW_COUNT пользователей"
+              else
+                echo "⚠️  Нет бэкапа для восстановления"
+              fi
+            fi
+
             docker image prune -f
-            echo "✅ Auth API deploy complete: $(date)"
+            echo "✅ Deploy complete: $(date)"
