@@ -21,13 +21,13 @@ jobs:
           script: |
             set -e
 
-            # Папка для auth-api внутри web-chat
+            # Клонируем/обновляем репозиторий auth-api на сервере
             AUTH_DIR=~/ai-pilot-web-chat/auth-api
-            mkdir -p "$AUTH_DIR"
-
-            # Копируем новые файлы поверх старых
-            cd "$AUTH_DIR"
-            rsync -av --delete --exclude='node_modules' --exclude='.git' "$GITHUB_WORKSPACE/" "$AUTH_DIR/"
+            if [ -d "$AUTH_DIR/.git" ]; then
+              cd "$AUTH_DIR" && git pull origin master
+            else
+              git clone https://github.com/EVGexpert/ai-pilot-auth-api.git "$AUTH_DIR"
+            fi
 
             # Пересобираем и запускаем
             cd ~/ai-pilot-web-chat
