@@ -16,18 +16,16 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script_stop: true
           timeout: 120s
           script: |
             set -e
 
-            # Клонируем/обновляем репозиторий auth-api на сервере
             AUTH_DIR=~/ai-pilot-web-chat/auth-api
-            if [ -d "$AUTH_DIR/.git" ]; then
-              cd "$AUTH_DIR" && git pull origin master
-            else
-              git clone https://github.com/EVGexpert/ai-pilot-auth-api.git "$AUTH_DIR"
+            # Клонируем свежую версию (или обновляем)
+            if [ -d "$AUTH_DIR" ]; then
+              rm -rf "$AUTH_DIR"
             fi
+            git clone --depth=1 https://github.com/EVGexpert/ai-pilot-auth-api.git "$AUTH_DIR"
 
             # Пересобираем и запускаем
             cd ~/ai-pilot-web-chat
