@@ -34,5 +34,10 @@ export { createAuditEvent } from './audit.js'
 
 export { getStats } from './stats.js'
 
+export {
+  generateActionKey, createActionRequest, findActionByKey,
+  updateActionStatus, getActionsBySession
+} from './action_requests.js'
+
 // Дефолтный экспорт — db инстанс (для прямого доступа, если нужен)
 export { default } from './connection.js'

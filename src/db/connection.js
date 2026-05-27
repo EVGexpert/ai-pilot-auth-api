@@ -208,6 +208,19 @@ if (ver7 < 7) {
   db.run('CREATE INDEX IF NOT EXISTS idx_site_memory_site ON site_memory(site_id)')
   db.run('INSERT INTO schema_version (version, applied_at) VALUES (7, ?)', [now()])
 }
+const ver8 = queryOne('SELECT MAX(version) as v FROM schema_version')?.v || 0
+if (ver8 < 8) {
+  db.run(`CREATE TABLE IF NOT EXISTS action_requests (
+    id TEXT PRIMARY KEY, user_id TEXT, site_id TEXT, session_id TEXT,
+    idempotency_key TEXT UNIQUE NOT NULL,
+    action_type TEXT NOT NULL, action_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_action_key ON action_requests(idempotency_key)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_action_session ON action_requests(session_id)')
+  db.run('INSERT INTO schema_version (version, applied_at) VALUES (8, ?)', [now()])
+}
 
 // ============================================================
 // JSON MIGRATION (legacy)

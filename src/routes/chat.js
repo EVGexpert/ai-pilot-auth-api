@@ -1,4 +1,4 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION } from '../config/prompt.js'
 
@@ -517,7 +517,7 @@ ${siteMemoryBlock}` : ''
     return { proposalId, result }
   }
 
-  // Подтвердить действие → выполнить на WP
+  // Подтвердить действие → выполнить на WP (с идемпотентностью)
   app.post('/actions/approve', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
@@ -525,6 +525,21 @@ ${siteMemoryBlock}` : ''
     const { actionId, sessionId, siteUrl, action } = request.body || {}
     if (!actionId) return reply.status(400).send({ error: 'actionId обязателен' })
     if (!action || !action.type) return reply.status(400).send({ error: 'action.type обязателен' })
+
+    // Генерируем idempotency key
+    const idempotencyKey = generateActionKey(action)
+
+    // Проверяем, не выполнялось ли уже такое действие
+    const existing = findActionByKey(idempotencyKey)
+    if (existing && existing.status === 'completed' && existing.result_json) {
+      return reply.send({
+        status: 'approved',
+        actionId,
+        wpProposalId: JSON.parse(existing.result_json)?.proposalId,
+        idempotent: true,
+        cached: true
+      })
+    }
 
     // Определяем сайт
     let wpUrl = siteUrl
@@ -539,6 +554,18 @@ ${siteMemoryBlock}` : ''
     const site = findSiteByUserAndUrl(request.user.sub, wpUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
 
+    // Создаём запись с idempotency key
+    const actionReq = existing || createActionRequest({
+      userId: request.user.sub, siteId: site.id, sessionId, action
+    })
+
+    if (actionReq.status === 'processing') {
+      return reply.status(409).send({ error: 'Действие уже выполняется', actionId })
+    }
+
+    // Ставим статус processing сразу — блокируем дубли
+    updateActionStatus(actionReq.id, 'processing')
+
     let execResult = null
     let execError = null
 
@@ -551,15 +578,17 @@ ${siteMemoryBlock}` : ''
     createAuditEvent({
       userId: request.user.sub, siteId: site.id, sessionId,
       eventType: 'action_approved', entityType: 'action', entityId: actionId,
-      payload: { actionId, action, execResult, execError },
+      payload: { actionId, action, execResult, execError, idempotencyKey },
       status: execError ? 'failed' : 'completed'
     })
+
+    updateActionStatus(actionReq.id, execError ? 'failed' : 'completed', { proposalId: execResult?.proposalId, result: execResult })
 
     if (execError) {
       return reply.status(502).send({ status: 'failed', error: execError, actionId })
     }
 
-    return reply.send({ status: 'approved', actionId, wpProposalId: execResult?.proposalId })
+    return reply.send({ status: 'approved', actionId, wpProposalId: execResult?.proposalId, idempotent: false })
   })
 
   // Отклонить действие (только аудит, WP не трогаем)

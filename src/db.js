@@ -13,7 +13,9 @@ export {
   createAuditEvent,
   registerJobHandler,
   getStats,
-  close
+  close,
+  generateActionKey, createActionRequest, findActionByKey,
+  updateActionStatus, getActionsBySession
 } from './db/index.js'
 
 export { default } from './db/index.js'
