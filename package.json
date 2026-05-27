@@ -1,6 +1,6 @@
 {
   "name": "ai-pilot-auth-api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI Pilot — SQLite-backed authentication backend",
   "type": "module",
   "scripts": {

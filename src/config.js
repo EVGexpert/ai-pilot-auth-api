@@ -1,3 +1,5 @@
+export const APP_VERSION = '0.3.0'
+
 export const config = {
   PORT: parseInt(process.env.PORT || '3001'),
   JWT_SECRET: process.env.JWT_SECRET || 'dev-secret-change-in-production',
