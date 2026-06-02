@@ -81,3 +81,7 @@ curl -X POST http://localhost:3001/api/backup \
 ```bash
 docker exec ai-pilot-auth sh -c "cp /app/data/aipilot.db /app/data/backups/manual-$(date +%Y%m%d).db"
 ```
+
+## Примечание
+
+В контейнере установлен `curl` для healthcheck. Если нужно убрать его из образа — удалите строку `RUN apk add --no-cache curl` из Dockerfile.

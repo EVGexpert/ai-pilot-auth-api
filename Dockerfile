@@ -1,6 +1,9 @@
 FROM node:24-alpine
 WORKDIR /app
 
+# Утилиты для healthcheck и дебага
+RUN apk add --no-cache curl
+
 # Production defaults (можно переопределить при docker run)
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/app/data/aipilot.db

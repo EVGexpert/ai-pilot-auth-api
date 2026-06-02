@@ -128,7 +128,7 @@ jobs:
 
             HEALTH_OK=false
             for i in $(seq 1 $HEALTH_RETRIES); do
-              HTTP_STATUS=$(docker exec "$CONTAINER_NAME" sh -c "curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/api/health 2>/dev/null || echo '000'")
+              HTTP_STATUS=$(docker exec "$CONTAINER_NAME" sh -c "curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/api/health || echo '000'")
               if [ "$HTTP_STATUS" = "200" ]; then
                 HEALTH_OK=true
                 echo "✅ HTTP healthcheck passed (attempt $i)"
@@ -150,7 +150,7 @@ jobs:
 
             DB_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
               TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
-              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{\"status\":\"error\"}"
+              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db || echo '{"status":"error"}'
             ')
 
             NEW_USER_COUNT=$(echo "$DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('users',0))" 2>/dev/null || echo "0")
@@ -185,7 +185,7 @@ jobs:
                   # Проверяем после rollback
                   OLD_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
                     TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
-                    curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{\"users\":0}"
+                    curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db || echo '{"users":0}'
                   ')
 
                   OLD_COUNT=$(echo "$OLD_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "0")
@@ -204,7 +204,7 @@ jobs:
             CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
             FINAL_DB_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
               TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
-              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{}"
+              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db || echo '{}'
             ')
 
             echo ""
