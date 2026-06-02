@@ -21,67 +21,253 @@ jobs:
             set -e
             echo "🔵 Deploy started: $(date)"
 
-            # Шаг 1: Бэкап БД перед деплоем
-            BACKUP_DIR=~/ai-pilot-web-chat/auth-data/backups
+            # ============================================================
+            # Конфигурация
+            # ============================================================
+            AUTH_DIR=~/ai-pilot-web-chat/auth-api
+            DATA_DIR=~/ai-pilot-web-chat/auth-data
+            DB_FILE="$DATA_DIR/aipilot.db"
+            BACKUP_DIR="$DATA_DIR/backups"
+            CONTAINER_NAME=ai-pilot-auth
+            IMAGE_NAME=ai-pilot-auth
+            HEALTH_RETRIES=5
+            HEALTH_INTERVAL=3
+
+            echo "📂 Data directory: $DATA_DIR"
+
+            # ============================================================
+            # Шаг 1: Проверка директорий
+            # ============================================================
             mkdir -p "$BACKUP_DIR"
-            DB_FILE=~/ai-pilot-web-chat/auth-data/aipilot.db
             if [ -f "$DB_FILE" ]; then
-              BACKUP_NAME="aipilot-pre-deploy-$(date +%Y%m%d-%H%M%S).db"
-              cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
-              echo "✅ DB backup: $BACKUP_NAME ($(stat -c%s $DB_FILE) bytes)"
-              # Чистим бэкапы старше 7 дней
-              find "$BACKUP_DIR" -name "aipilot-pre-deploy-*.db" -mtime +7 -delete 2>/dev/null || true
+              DB_SIZE=$(stat -c%s "$DB_FILE" 2>/dev/null || echo 0)
+              echo "📦 Current DB: $DB_FILE ($DB_SIZE bytes)"
+            else
+              echo "📦 No existing DB file found (fresh deploy)"
             fi
 
-            # Шаг 2: Клонируем свежий код
-            AUTH_DIR=~/ai-pilot-web-chat/auth-api
+            # ============================================================
+            # Шаг 2: Graceful stop контейнера (если запущен)
+            # ============================================================
+            if docker ps -q --filter "name=$CONTAINER_NAME" | grep -q .; then
+              echo "🛑 Graceful stop: $CONTAINER_NAME..."
+              # Даём sql.js до 30 секунд на сохранение БД
+              docker stop -t 30 "$CONTAINER_NAME" || true
+              docker rm "$CONTAINER_NAME" || true
+              echo "✅ Container stopped and removed"
+            else
+              echo "ℹ️  Container not running, skipping stop"
+            fi
+
+            # ============================================================
+            # Шаг 3: Backup БД (после graceful stop — данные актуальны)
+            # ============================================================
+            if [ -f "$DB_FILE" ] && [ "$DB_SIZE" -gt 0 ] 2>/dev/null; then
+              BACKUP_NAME="aipilot-pre-deploy-$(date +%Y%m%d-%H%M%S).db"
+              cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
+              echo "✅ DB backup: $BACKUP_DIR/$BACKUP_NAME ($DB_SIZE bytes)"
+
+              # Проверяем, что бэкап не повреждён
+              if [ -f "$BACKUP_DIR/$BACKUP_NAME" ]; then
+                BCK_SIZE=$(stat -c%s "$BACKUP_DIR/$BACKUP_NAME" 2>/dev/null || echo 0)
+                echo "   Backup size: $BCK_SIZE bytes"
+              fi
+
+              # Чистим бэкапы старше 7 дней
+              find "$BACKUP_DIR" -name "aipilot-pre-deploy-*.db" -mtime +7 -delete 2>/dev/null || true
+            else
+              echo "ℹ️  No DB to backup"
+            fi
+
+            # ============================================================
+            # Шаг 4: Клонирование свежего кода
+            # ============================================================
+            echo "📥 Cloning fresh code..."
             rm -rf "$AUTH_DIR"
             git clone --depth=1 https://github.com/EVGexpert/ai-pilot-auth-api.git "$AUTH_DIR"
+            echo "✅ Code cloned"
 
-            # Шаг 3: Собираем образ
+            # ============================================================
+            # Шаг 5: Сборка образа
+            # ============================================================
+            echo "🔨 Building Docker image..."
             cd ~/ai-pilot-web-chat
             docker network create aipilot 2>/dev/null || true
-            docker build -t ai-pilot-auth auth-api/
+            docker build -t "$IMAGE_NAME" auth-api/
+            echo "✅ Image built"
 
-            # Шаг 4: Запускаем новый контейнер
-            docker rm -f ai-pilot-auth 2>/dev/null || true
+            # ============================================================
+            # Шаг 6: Запуск нового контейнера
+            # ============================================================
+            echo "🚀 Starting new container..."
             docker run -d \
-              --name ai-pilot-auth \
+              --name "$CONTAINER_NAME" \
               --restart unless-stopped \
               --network aipilot \
               --add-host host.docker.internal:host-gateway \
               -p 127.0.0.1:3001:3001 \
-              -v /root/ai-pilot-web-chat/auth-data:/app/data \
+              -v "$DATA_DIR:/app/data" \
+              -e NODE_ENV=production \
               -e PORT=3001 \
               -e DATABASE_PATH=/app/data/aipilot.db \
               -e JWT_SECRET=${{ secrets.JWT_SECRET }} \
+              -e DEPLOY_HEALTH_TOKEN=${{ secrets.DEPLOY_HEALTH_TOKEN }} \
               -e GATEWAY_TOKEN=${{ secrets.GATEWAY_TOKEN }} \
               -e GATEWAY_WS=ws://host.docker.internal:18789 \
               -e APP_URL=https://pilotsite.ru \
               -e TZ=Europe/Kaliningrad \
-              ai-pilot-auth
+              "$IMAGE_NAME"
 
-            # Шаг 5: Проверка целостности БД после запуска
-            echo "⏳ Проверка БД..."
+            echo "✅ Container started"
+
+            # ============================================================
+            # Шаг 7: Healthcheck через docker exec (не требует auth)
+            # ============================================================
+            echo "⏳ Healthcheck: waiting for container to be ready..."
             sleep 3
-            # Используем curl к своему же API (без авторизации)
-            STATS=$(curl -sf http://localhost:3001/api/stats 2>/dev/null || echo "")
-            USER_COUNT=$(echo "$STATS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "unknown")
-            echo "👥 Пользователей в БД: $USER_COUNT"
-            if [ "$USER_COUNT" = "0" ] || [ "$USER_COUNT" = "unknown" ]; then
+
+            HEALTH_OK=false
+            for i in $(seq 1 $HEALTH_RETRIES); do
+              HTTP_STATUS=$(docker exec "$CONTAINER_NAME" sh -c "curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/api/health 2>/dev/null || echo '000'")
+              if [ "$HTTP_STATUS" = "200" ]; then
+                HEALTH_OK=true
+                echo "✅ HTTP healthcheck passed (attempt $i)"
+                break
+              fi
+              echo "⏳ HTTP healthcheck: waiting... ($i/$HEALTH_RETRIES)"
+              sleep "$HEALTH_INTERVAL"
+            done
+
+            if [ "$HEALTH_OK" != "true" ]; then
+              echo "❌ HTTP healthcheck FAILED after $HEALTH_RETRIES attempts"
+              exit 1
+            fi
+
+            # ============================================================
+            # Шаг 8: Проверка БД через docker exec (без auth)
+            # ============================================================
+            echo "⏳ Checking database integrity..."
+
+            DB_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
+            const initSqlJs = require('sql.js');
+            const fs = require('fs');
+            const path = '/app/data/aipilot.db';
+            async function main() {
+              const exists = fs.existsSync(path);
+              if (!exists) { console.log(JSON.stringify({status:'empty', databaseExists:false, users:0})); return; }
+              const SQL = await initSqlJs();
+              const buf = fs.readFileSync(path);
+              const db = new SQL.Database(buf);
+              const users = db.exec('SELECT COUNT(*) as c FROM users');
+              const sites = db.exec('SELECT COUNT(*) as c FROM sites');
+              const sessions = db.exec('SELECT COUNT(*) as c FROM chat_sessions');
+              const schema = db.exec('SELECT MAX(version) as v FROM schema_version');
+              const stat = fs.statSync(path);
+              console.log(JSON.stringify({
+                status: 'ok',
+                databaseExists: true,
+                databaseSizeBytes: stat.size,
+                users: users[0]?.values[0][0] || 0,
+                sites: sites[0]?.values[0][0] || 0,
+                sessions: sessions[0]?.values[0][0] || 0,
+                schemaVersion: schema[0]?.values[0][0] || 0
+              }));
+              db.close();
+            }
+            main().catch(e => { console.error(JSON.stringify({status:'error',error:e.message})); process.exit(1); });
+            " 2>/dev/null || echo '{"status":"error"}')
+
+            NEW_USER_COUNT=$(echo "$DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('users',0))" 2>/dev/null || echo "0")
+            DB_STATUS=$(echo "$DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
+
+            echo "📊 DB check result: $NEW_USER_COUNT users, status=$DB_STATUS"
+
+            if [ "$DB_STATUS" = "error" ] || [ "$DB_STATUS" = "unknown" ]; then
+              echo "❌ DB check failed!"
+              exit 1
+            fi
+
+            # ============================================================
+            # Шаг 9: Rollback при пустой БД (если был бэкап с данными)
+            # ============================================================
+            if [ "$NEW_USER_COUNT" = "0" ]; then
+              echo "⚠️  WARNING: Database has 0 users!"
+
               LATEST_BACKUP=$(ls -t "$BACKUP_DIR" 2>/dev/null | head -1)
               if [ -n "$LATEST_BACKUP" ] && [ -f "$BACKUP_DIR/$LATEST_BACKUP" ]; then
-                echo "⚠️  DB пуста! Восстанавливаю из бэкапа: $LATEST_BACKUP"
-                docker stop ai-pilot-auth
-                cp "$BACKUP_DIR/$LATEST_BACKUP" "$DB_FILE"
-                docker start ai-pilot-auth
-                sleep 3
-                NEW_COUNT=$(curl -sf http://localhost:3001/api/stats | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "?")
-                echo "✅ Восстановлено: $NEW_COUNT пользователей"
+                BCK_SIZE=$(stat -c%s "$BACKUP_DIR/$LATEST_BACKUP" 2>/dev/null || echo 0)
+                if [ "$BCK_SIZE" -gt 100 ]; then  # Непустой бэкап
+                  echo "🔄 Rolling back from: $BACKUP_DIR/$LATEST_BACKUP ($BCK_SIZE bytes)"
+                  docker stop -t 10 "$CONTAINER_NAME" || true
+                  cp "$BACKUP_DIR/$LATEST_BACKUP" "$DB_FILE"
+                  docker start "$CONTAINER_NAME" || {
+                    echo "❌ Rollback container restart failed!"
+                    exit 1
+                  }
+                  sleep 3
+
+                  # Проверяем после rollback
+                  OLD_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
+                  const initSqlJs = require('sql.js');
+                  const fs = require('fs');
+                  async function main() {
+                    const SQL = await initSqlJs();
+                    const buf = fs.readFileSync('/app/data/aipilot.db');
+                    const db = new SQL.Database(buf);
+                    const users = db.exec('SELECT COUNT(*) as c FROM users');
+                    console.log(JSON.stringify({users: users[0]?.values[0][0] || 0}));
+                    db.close();
+                  }
+                  main().catch(e => process.exit(1));
+                  " 2>/dev/null || echo '{"users":0}')
+
+                  OLD_COUNT=$(echo "$OLD_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "0")
+                  echo "✅ Rollback complete: $OLD_COUNT users restored"
+                else
+                  echo "⚠️  Backup is empty too ($BCK_SIZE bytes), skipping rollback"
+                fi
               else
-                echo "⚠️  Нет бэкапа для восстановления"
+                echo "ℹ️  No backup found, skipping rollback (fresh install?)"
               fi
             fi
+
+            # ============================================================
+            # Шаг 10: Финальный отчёт
+            # ============================================================
+            CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+            FINAL_DB_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
+            const initSqlJs = require('sql.js');
+            const fs = require('fs');
+            async function main() {
+              const SQL = await initSqlJs();
+              const buf = fs.readFileSync('/app/data/aipilot.db');
+              const db = new SQL.Database(buf);
+              const users = db.exec('SELECT COUNT(*) as c FROM users');
+              const sites = db.exec('SELECT COUNT(*) as c FROM sites');
+              const sessions = db.exec('SELECT COUNT(*) as c FROM chat_sessions');
+              const schema = db.exec('SELECT MAX(version) as v FROM schema_version');
+              console.log(JSON.stringify({
+                users: users[0]?.values[0][0] || 0,
+                sites: sites[0]?.values[0][0] || 0,
+                sessions: sessions[0]?.values[0][0] || 0,
+                schemaVersion: schema[0]?.values[0][0] || 0
+              }));
+              db.close();
+            }
+            main().catch(e => process.exit(1));
+            " 2>/dev/null || echo '{}')
+
+            echo ""
+            echo "═══════════════════════════════════════"
+            echo "  📋 DEPLOY REPORT"
+            echo "═══════════════════════════════════════"
+            echo "  Container:    $CONTAINER_NAME ($CONTAINER_STATUS)"
+            echo "  DB path:      $DB_FILE"
+            echo "  Users:        $(echo "$FINAL_DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('users','?'))" 2>/dev/null)"
+            echo "  Sites:        $(echo "$FINAL_DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sites','?'))" 2>/dev/null)"
+            echo "  Sessions:     $(echo "$FINAL_DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sessions','?'))" 2>/dev/null)"
+            echo "  Schema v:     $(echo "$FINAL_DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('schemaVersion','?'))" 2>/dev/null)"
+            echo "═══════════════════════════════════════"
 
             docker image prune -f
             echo "✅ Deploy complete: $(date)"
