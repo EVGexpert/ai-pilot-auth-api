@@ -1,5 +1,5 @@
 import initSqlJs from 'sql.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { config } from '../config.js'
@@ -75,12 +75,22 @@ export function now() {
 }
 
 // ============================================================
-// SAVE
+// SAVE — атомарная запись через .tmp + rename
 // ============================================================
+const TMP_PATH = DB_PATH + '.tmp'
+let dirty = false        // были изменения после последнего save?
+let closed = false       // БД уже закрыта?
+
 function save() {
+  if (closed) return
   try {
     const data = db.export()
-    writeFileSync(DB_PATH, Buffer.from(data))
+    // Атомарная запись: сначала в .tmp, затем rename
+    writeFileSync(TMP_PATH, Buffer.from(data))
+    renameSync(TMP_PATH, DB_PATH)
+    dirty = false
+    const size = existsSync(DB_PATH) ? statSync(DB_PATH).size : 0
+    console.log(`[DB] Saved: ${DB_PATH} (${size} bytes)`)
   } catch (e) {
     console.error('[DB] Save error:', e.message)
   }
@@ -88,6 +98,7 @@ function save() {
 
 let saveTimer = null
 function scheduleSave() {
+  dirty = true
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     save()
@@ -95,9 +106,12 @@ function scheduleSave() {
   }, 1000)
 }
 
+// Фоновый save каждые 10 секунд, если есть изменения
 setInterval(() => {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
-  save()
+  if (dirty) {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    save()
+  }
 }, 10000)
 
 // ============================================================
@@ -296,14 +310,29 @@ if (userCount === 0) {
 }
 
 // ============================================================
-// SHUTDOWN
+// SHUTDOWN — синхронный save при завершении
 // ============================================================
 export function close() {
-  if (saveTimer) clearTimeout(saveTimer)
-  save()
-  db.close()
+  if (closed) return  // idempotent
+  closed = true
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  if (dirty) {
+    save()
+  }
+  try { db.close() } catch (e) { /* уже закрыта */ }
+  const size = existsSync(DB_PATH) ? statSync(DB_PATH).size : 0
+  console.log(`[DB] Closed: ${DB_PATH} (${size} bytes)`)
 }
+
 process.on('SIGINT', () => { close(); process.exit(0) })
 process.on('SIGTERM', () => { close(); process.exit(0) })
+process.on('beforeExit', () => {
+  if (dirty && !closed) {
+    try { save() } catch (e) { /* log already in save */ }
+  }
+})
 
 export default db
