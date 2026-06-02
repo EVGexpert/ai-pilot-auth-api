@@ -5,7 +5,7 @@ import authRoutes from './routes/auth.js'
 import sitesRoutes from './routes/sites.js'
 import chatRoutes from './routes/chat.js'
 import { config } from './config.js'
-import { getStats } from './db.js'
+import { getStats, getDbHealth } from './db.js'
 import { verifyToken } from './middleware/auth.js'
 
 
@@ -30,6 +30,24 @@ await app.register(sitesRoutes, { prefix: '/api/sites' })
 await app.register(chatRoutes, { prefix: '/api/chat' })
 
 app.get('/api/health', async () => ({ status: 'ok', version: '0.3.0' }))
+
+// Deploy healthcheck — X-Deploy-Token, без персональных данных
+app.get('/api/health/db', async (request, reply) => {
+  const deployToken = request.headers['x-deploy-token']
+  if (!deployToken) return reply.status(401).send({ error: 'Missing X-Deploy-Token' })
+  if (config.DEPLOY_HEALTH_TOKEN && deployToken !== config.DEPLOY_HEALTH_TOKEN) {
+    return reply.status(403).send({ error: 'Invalid deploy token' })
+  }
+  // Если DEPLOY_HEALTH_TOKEN не задан в dev — пропускаем
+  if (!config.DEPLOY_HEALTH_TOKEN && config.isProduction) {
+    return reply.status(503).send({ error: 'DEPLOY_HEALTH_TOKEN not configured' })
+  }
+  try {
+    return reply.send(getDbHealth())
+  } catch (e) {
+    return reply.status(500).send({ error: e.message })
+  }
+})
 
 // Protected: only admin can see stats
 app.get('/api/stats', async (request, reply) => {

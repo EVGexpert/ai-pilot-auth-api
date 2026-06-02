@@ -12,7 +12,7 @@ export {
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
   createAuditEvent,
   registerJobHandler,
-  getStats,
+  getStats, getDbHealth,
   close,
   generateActionKey, createActionRequest, findActionByKey,
   updateActionStatus, getActionsBySession

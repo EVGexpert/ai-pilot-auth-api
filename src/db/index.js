@@ -32,7 +32,7 @@ export {
 
 export { createAuditEvent } from './audit.js'
 
-export { getStats } from './stats.js'
+export { getStats, getDbHealth } from './stats.js'
 
 export {
   generateActionKey, createActionRequest, findActionByKey,

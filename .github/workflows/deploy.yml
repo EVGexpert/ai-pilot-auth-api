@@ -121,7 +121,7 @@ jobs:
             echo "✅ Container started"
 
             # ============================================================
-            # Шаг 7: Healthcheck через docker exec (не требует auth)
+            # Шаг 7: Healthcheck — ждём, пока контейнер ответит
             # ============================================================
             echo "⏳ Healthcheck: waiting for container to be ready..."
             sleep 3
@@ -144,38 +144,14 @@ jobs:
             fi
 
             # ============================================================
-            # Шаг 8: Проверка БД через docker exec (без auth)
+            # Шаг 8: Проверка БД через /api/health/db (с X-Deploy-Token)
             # ============================================================
             echo "⏳ Checking database integrity..."
 
-            DB_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
-            const initSqlJs = require('sql.js');
-            const fs = require('fs');
-            const path = '/app/data/aipilot.db';
-            async function main() {
-              const exists = fs.existsSync(path);
-              if (!exists) { console.log(JSON.stringify({status:'empty', databaseExists:false, users:0})); return; }
-              const SQL = await initSqlJs();
-              const buf = fs.readFileSync(path);
-              const db = new SQL.Database(buf);
-              const users = db.exec('SELECT COUNT(*) as c FROM users');
-              const sites = db.exec('SELECT COUNT(*) as c FROM sites');
-              const sessions = db.exec('SELECT COUNT(*) as c FROM chat_sessions');
-              const schema = db.exec('SELECT MAX(version) as v FROM schema_version');
-              const stat = fs.statSync(path);
-              console.log(JSON.stringify({
-                status: 'ok',
-                databaseExists: true,
-                databaseSizeBytes: stat.size,
-                users: users[0]?.values[0][0] || 0,
-                sites: sites[0]?.values[0][0] || 0,
-                sessions: sessions[0]?.values[0][0] || 0,
-                schemaVersion: schema[0]?.values[0][0] || 0
-              }));
-              db.close();
-            }
-            main().catch(e => { console.error(JSON.stringify({status:'error',error:e.message})); process.exit(1); });
-            " 2>/dev/null || echo '{"status":"error"}')
+            DB_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
+              TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
+              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{\"status\":\"error\"}"
+            ')
 
             NEW_USER_COUNT=$(echo "$DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('users',0))" 2>/dev/null || echo "0")
             DB_STATUS=$(echo "$DB_CHECK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
@@ -207,19 +183,10 @@ jobs:
                   sleep 3
 
                   # Проверяем после rollback
-                  OLD_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
-                  const initSqlJs = require('sql.js');
-                  const fs = require('fs');
-                  async function main() {
-                    const SQL = await initSqlJs();
-                    const buf = fs.readFileSync('/app/data/aipilot.db');
-                    const db = new SQL.Database(buf);
-                    const users = db.exec('SELECT COUNT(*) as c FROM users');
-                    console.log(JSON.stringify({users: users[0]?.values[0][0] || 0}));
-                    db.close();
-                  }
-                  main().catch(e => process.exit(1));
-                  " 2>/dev/null || echo '{"users":0}')
+                  OLD_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
+                    TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
+                    curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{\"users\":0}"
+                  ')
 
                   OLD_COUNT=$(echo "$OLD_CHECK" | python3 -c "import sys,json; print(json.load(sys.stdin).get('users',0))" 2>/dev/null || echo "0")
                   echo "✅ Rollback complete: $OLD_COUNT users restored"
@@ -235,27 +202,10 @@ jobs:
             # Шаг 10: Финальный отчёт
             # ============================================================
             CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
-            FINAL_DB_CHECK=$(docker exec "$CONTAINER_NAME" node -e "
-            const initSqlJs = require('sql.js');
-            const fs = require('fs');
-            async function main() {
-              const SQL = await initSqlJs();
-              const buf = fs.readFileSync('/app/data/aipilot.db');
-              const db = new SQL.Database(buf);
-              const users = db.exec('SELECT COUNT(*) as c FROM users');
-              const sites = db.exec('SELECT COUNT(*) as c FROM sites');
-              const sessions = db.exec('SELECT COUNT(*) as c FROM chat_sessions');
-              const schema = db.exec('SELECT MAX(version) as v FROM schema_version');
-              console.log(JSON.stringify({
-                users: users[0]?.values[0][0] || 0,
-                sites: sites[0]?.values[0][0] || 0,
-                sessions: sessions[0]?.values[0][0] || 0,
-                schemaVersion: schema[0]?.values[0][0] || 0
-              }));
-              db.close();
-            }
-            main().catch(e => process.exit(1));
-            " 2>/dev/null || echo '{}')
+            FINAL_DB_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
+              TOKEN=${DEPLOY_HEALTH_TOKEN:-deploy}
+              curl -sf -H "X-Deploy-Token: $TOKEN" http://localhost:3001/api/health/db 2>/dev/null || echo "{}"
+            ')
 
             echo ""
             echo "═══════════════════════════════════════"

@@ -69,6 +69,7 @@ export const config = {
   SMTP_USER: process.env.SMTP_USER,
   SMTP_PASS: process.env.SMTP_PASS,
   GATEWAY_TOKEN: process.env.GATEWAY_TOKEN,
+  DEPLOY_HEALTH_TOKEN: process.env.DEPLOY_HEALTH_TOKEN,
   GATEWAY_WS: process.env.GATEWAY_WS || 'ws://localhost:18789'
 }
 
