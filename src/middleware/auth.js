@@ -21,10 +21,14 @@ export function verifyToken(token) {
   }
 }
 
+/**
+ * Fastify preHandler: требует JWT-авторизацию.
+ * Устанавливает request.user = { sub, email, role }.
+ */
 export async function authMiddleware(request, reply) {
   const authHeader = request.headers.authorization
   if (!authHeader?.startsWith('Bearer ')) {
-    return reply.status(401).send({ error: 'Missing token' })
+    return reply.status(401).send({ error: 'Unauthorized' })
   }
 
   const token = authHeader.slice(7)
@@ -34,4 +38,14 @@ export async function authMiddleware(request, reply) {
   }
 
   request.user = payload
+}
+
+/**
+ * Fastify preHandler: требует роль admin.
+ * Используется ПОСЛЕ authMiddleware.
+ */
+export async function adminOnly(request, reply) {
+  if (!request.user || request.user.role !== 'admin') {
+    return reply.status(403).send({ error: 'Admin access required' })
+  }
 }

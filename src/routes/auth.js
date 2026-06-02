@@ -7,7 +7,7 @@ import {
   createRefreshToken, findValidRefreshToken, revokeRefreshToken,
   revokeAllUserTokens
 } from '../db.js'
-import { generateToken, verifyToken } from '../middleware/auth.js'
+import { generateToken, authMiddleware } from '../middleware/auth.js'
 import { sendVerificationEmail } from '../email.js'
 
 export default async function authRoutes(app) {
@@ -107,19 +107,7 @@ export default async function authRoutes(app) {
     return reply.send({ message: 'Выход выполнен' })
   })
 
-  // Выход со всех устройств
-  app.post('/logout-all', {
-    preHandler: async (request, reply) => {
-      const auth = request.headers.authorization
-      if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Missing token' })
-      const payload = verifyToken(auth.slice(7))
-      if (!payload) return reply.status(401).send({ error: 'Invalid token' })
-      request.user = payload
-    }
-  }, async (request, reply) => {
-    revokeAllUserTokens(request.user.sub)
-    return reply.send({ message: 'Все сессии завершены' })
-  })
+
 
   // Подтверждение email
   app.post('/verify-email', async (request, reply) => {
@@ -136,20 +124,18 @@ export default async function authRoutes(app) {
   })
 
   // Информация о пользователе
-  app.get('/me', {
-    preHandler: async (request, reply) => {
-      const auth = request.headers.authorization
-      if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Missing token' })
-      const payload = verifyToken(auth.slice(7))
-      if (!payload) return reply.status(401).send({ error: 'Invalid token' })
-      request.user = payload
-    }
-  }, async (request, reply) => {
+  app.get('/me', { preHandler: [authMiddleware] }, async (request, reply) => {
     const user = findUserById(request.user.sub)
     if (!user) return reply.status(404).send({ error: 'User not found' })
     const sites = findSitesByUser(user.id).map(s => ({
       id: s.id, url: s.url, name: s.name, wp_version: s.wp_version, created_at: s.created_at
     }))
     return reply.send({ user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: !!user.email_verified }, sites })
+  })
+
+  // Выход со всех устройств
+  app.post('/logout-all', { preHandler: [authMiddleware] }, async (request, reply) => {
+    revokeAllUserTokens(request.user.sub)
+    return reply.send({ message: 'Все сессии завершены' })
   })
 }

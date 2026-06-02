@@ -6,7 +6,7 @@ import sitesRoutes from './routes/sites.js'
 import chatRoutes from './routes/chat.js'
 import { config } from './config.js'
 import { getStats, getDbHealth } from './db.js'
-import { verifyToken } from './middleware/auth.js'
+import { authMiddleware, adminOnly } from './middleware/auth.js'
 
 
 const app = Fastify({ logger: true, genReqId: () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8) })
@@ -29,6 +29,7 @@ await app.register(authRoutes, { prefix: '/api/auth' })
 await app.register(sitesRoutes, { prefix: '/api/sites' })
 await app.register(chatRoutes, { prefix: '/api/chat' })
 
+// Simple healthcheck (без авторизации)
 app.get('/api/health', async () => ({ status: 'ok', version: '0.3.0' }))
 
 // Deploy healthcheck — X-Deploy-Token, без персональных данных
@@ -38,7 +39,6 @@ app.get('/api/health/db', async (request, reply) => {
   if (config.DEPLOY_HEALTH_TOKEN && deployToken !== config.DEPLOY_HEALTH_TOKEN) {
     return reply.status(403).send({ error: 'Invalid deploy token' })
   }
-  // Если DEPLOY_HEALTH_TOKEN не задан в dev — пропускаем
   if (!config.DEPLOY_HEALTH_TOKEN && config.isProduction) {
     return reply.status(503).send({ error: 'DEPLOY_HEALTH_TOKEN not configured' })
   }
@@ -49,12 +49,8 @@ app.get('/api/health/db', async (request, reply) => {
   }
 })
 
-// Protected: only admin can see stats
-app.get('/api/stats', async (request, reply) => {
-  const auth = request.headers.authorization
-  if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' })
-  const payload = verifyToken(auth.slice(7))
-  if (!payload || payload.role !== 'admin') return reply.status(403).send({ error: 'Admin only' })
+// Stats — только admin
+app.get('/api/stats', { preHandler: [authMiddleware, adminOnly] }, async (request, reply) => {
   try {
     return reply.send({ status: 'ok', ...getStats() })
   } catch (e) {
@@ -62,12 +58,8 @@ app.get('/api/stats', async (request, reply) => {
   }
 })
 
-// Protected: only admin can trigger backup
-app.post('/api/backup', async (request, reply) => {
-  const auth = request.headers.authorization
-  if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' })
-  const payload = verifyToken(auth.slice(7))
-  if (!payload || payload.role !== 'admin') return reply.status(403).send({ error: 'Admin only' })
+// Backup — только admin
+app.post('/api/backup', { preHandler: [authMiddleware, adminOnly] }, async (request, reply) => {
   try {
     const { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } = await import('fs')
     const path = await import('path')
