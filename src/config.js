@@ -1,7 +1,65 @@
+import { existsSync, statSync } from 'fs'
+
 export const APP_VERSION = '0.3.0'
+
+export const NODE_ENV = process.env.NODE_ENV || 'development'
+const isProduction = NODE_ENV === 'production'
+
+// Валидация production-окружения при импорте
+// (не ждём вызова функции — умираем сразу)
+function validateProductionConfig() {
+  if (!isProduction) return
+
+  // DATABASE_PATH обязателен
+  if (!process.env.DATABASE_PATH) {
+    throw new Error(
+      'DATABASE_PATH is required in production. ' +
+      'Example: DATABASE_PATH=/app/data/aipilot.db'
+    )
+  }
+
+  // Запрещаем опасные пути для БД
+  const dangerousPaths = ['/tmp', '/var/tmp', '/dev/shm', '/app/src', '/src', './src']
+  const dbPath = process.env.DATABASE_PATH
+  for (const bad of dangerousPaths) {
+    if (dbPath.startsWith(bad)) {
+      throw new Error(
+        `DATABASE_PATH (${dbPath}) points to a temporary or source directory. ` +
+        `Use a persistent volume path like /app/data/`
+      )
+    }
+  }
+
+  // JWT_SECRET обязателен
+  if (!process.env.JWT_SECRET) {
+    throw new Error(
+      'JWT_SECRET is required in production. ' +
+      'Generate one: openssl rand -hex 32'
+    )
+  }
+
+  // Минимальная длина JWT_SECRET
+  if (process.env.JWT_SECRET.length < 32) {
+    throw new Error(
+      'JWT_SECRET must be at least 32 characters in production. ' +
+      'Generate one: openssl rand -hex 32'
+    )
+  }
+}
+
+validateProductionConfig()
+
+// DEV-предупреждения
+if (!isProduction) {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-secret-change-in-production') {
+    console.warn('[config] ⚠️  Using dev JWT_SECRET — not suitable for production')
+  }
+}
 
 export const config = {
   PORT: parseInt(process.env.PORT || '3001'),
+  NODE_ENV,
+  isProduction,
   JWT_SECRET: process.env.JWT_SECRET || 'dev-secret-change-in-production',
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
   DATABASE_PATH: process.env.DATABASE_PATH || './data/aipilot.db',
@@ -12,4 +70,15 @@ export const config = {
   SMTP_PASS: process.env.SMTP_PASS,
   GATEWAY_TOKEN: process.env.GATEWAY_TOKEN,
   GATEWAY_WS: process.env.GATEWAY_WS || 'ws://localhost:18789'
+}
+
+// Безопасная диагностика при старте
+if (config.DATABASE_PATH) {
+  const dbPath = config.DATABASE_PATH
+  const exists = existsSync(dbPath)
+  let size = 0
+  if (exists) {
+    try { size = statSync(dbPath).size } catch (e) { /* ignore */ }
+  }
+  console.log(`[config] DB path: ${dbPath} (exists: ${exists}, size: ${size} bytes)`)
 }
