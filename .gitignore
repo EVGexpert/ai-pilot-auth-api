@@ -3,3 +3,5 @@ data/
 .env
 *.local
 .DS_Store
+.codeindex/
+READ_ME.md
