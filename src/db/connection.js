@@ -239,6 +239,24 @@ if (ver8 < 8) {
   db.run('INSERT INTO schema_version (version, applied_at) VALUES (8, ?)', [now()])
 }
 
+const ver9 = queryOne('SELECT MAX(version) as v FROM schema_version')?.v || 0
+if (ver9 < 9) {
+  db.run(`CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    user_agent TEXT,
+    ip_address TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`)
+  db.run('CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash)')
+  db.run('CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)')
+  db.run('INSERT INTO schema_version (version, applied_at) VALUES (9, ?)', [now()])
+}
+
 // ============================================================
 // JSON MIGRATION (legacy)
 // ============================================================

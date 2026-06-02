@@ -1,9 +1,13 @@
-import { nanoid } from 'nanoid'
+import { config } from '../config.js'
 import { hashPassword, verifyPassword } from '../password.js'
-import { findUserByEmail, findUserById, createUser, updateUser,
-         createVerification, findVerification, deleteVerificationsByUser,
-         findSitesByUser, allSites } from '../db.js'
-import { generateToken } from '../middleware/auth.js'
+import {
+  findUserByEmail, findUserById, createUser, updateUser,
+  createVerification, findVerification, deleteVerificationsByUser,
+  findSitesByUser, allSites,
+  createRefreshToken, findValidRefreshToken, revokeRefreshToken,
+  revokeAllUserTokens
+} from '../db.js'
+import { generateToken, verifyToken } from '../middleware/auth.js'
 import { sendVerificationEmail } from '../email.js'
 
 export default async function authRoutes(app) {
@@ -16,7 +20,6 @@ export default async function authRoutes(app) {
 
     if (findUserByEmail(email)) return reply.status(409).send({ error: 'Email уже зарегистрирован' })
 
-    // admin@pilot.ru и admin-email → роль admin
     const role = email.includes('admin') ? 'admin' : 'client'
     const passwordHash = await hashPassword(password)
     const user = createUser({ email, passwordHash, name, role })
@@ -27,8 +30,12 @@ export default async function authRoutes(app) {
     try { await sendVerificationEmail(email, code) } catch (err) { console.error('Email failed:', err.message) }
 
     const token = generateToken(user)
+    const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+
     return reply.status(201).send({
-      token, user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: false },
+      token,
+      refreshToken,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: false },
       message: 'Подтвердите email. Код отправлен на почту.'
     })
   })
@@ -45,7 +52,8 @@ export default async function authRoutes(app) {
     if (!valid) return reply.status(401).send({ error: 'Неверный email или пароль' })
 
     const token = generateToken(user)
-    // Админ видит ВСЕ уникальные сайты
+    const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+
     let siteList
     if (user.role === 'admin') {
       const seen = new Set()
@@ -63,9 +71,54 @@ export default async function authRoutes(app) {
 
     return reply.send({
       token,
+      refreshToken,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: !!user.email_verified },
       sites
     })
+  })
+
+  // Обновить access token по refresh token
+  app.post('/refresh', async (request, reply) => {
+    const { refreshToken } = request.body || {}
+    if (!refreshToken) return reply.status(400).send({ error: 'refreshToken обязателен' })
+
+    const stored = findValidRefreshToken(refreshToken)
+    if (!stored) return reply.status(401).send({ error: 'Refresh token недействителен или истёк' })
+
+    const user = findUserById(stored.user_id)
+    if (!user) return reply.status(404).send({ error: 'Пользователь не найден' })
+
+    // Создаём новый access token
+    const token = generateToken(user)
+
+    // Отзываем старый refresh token и выдаём новый (rotation)
+    revokeRefreshToken(refreshToken)
+    const newRefreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+
+    return reply.send({ token, refreshToken: newRefreshToken })
+  })
+
+  // Выход (отозвать refresh token)
+  app.post('/logout', async (request, reply) => {
+    const { refreshToken } = request.body || {}
+    if (!refreshToken) return reply.status(400).send({ error: 'refreshToken обязателен' })
+
+    revokeRefreshToken(refreshToken)
+    return reply.send({ message: 'Выход выполнен' })
+  })
+
+  // Выход со всех устройств
+  app.post('/logout-all', {
+    preHandler: async (request, reply) => {
+      const auth = request.headers.authorization
+      if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Missing token' })
+      const payload = verifyToken(auth.slice(7))
+      if (!payload) return reply.status(401).send({ error: 'Invalid token' })
+      request.user = payload
+    }
+  }, async (request, reply) => {
+    revokeAllUserTokens(request.user.sub)
+    return reply.send({ message: 'Все сессии завершены' })
   })
 
   // Подтверждение email
@@ -87,7 +140,6 @@ export default async function authRoutes(app) {
     preHandler: async (request, reply) => {
       const auth = request.headers.authorization
       if (!auth?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Missing token' })
-      const { verifyToken } = await import('../middleware/auth.js')
       const payload = verifyToken(auth.slice(7))
       if (!payload) return reply.status(401).send({ error: 'Invalid token' })
       request.user = payload

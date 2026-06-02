@@ -32,6 +32,11 @@ export {
 
 export { createAuditEvent } from './audit.js'
 
+export {
+  createRefreshToken, findValidRefreshToken,
+  revokeRefreshToken, revokeAllUserTokens, cleanExpiredTokens
+} from './refresh_tokens.js'
+
 export { getStats, getDbHealth } from './stats.js'
 
 export {

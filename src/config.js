@@ -62,6 +62,8 @@ export const config = {
   isProduction,
   JWT_SECRET: process.env.JWT_SECRET || 'dev-secret-change-in-production',
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  ACCESS_TOKEN_EXPIRES_IN: process.env.ACCESS_TOKEN_EXPIRES_IN || '15m',
+  REFRESH_TOKEN_EXPIRES_IN: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
   DATABASE_PATH: process.env.DATABASE_PATH || './data/aipilot.db',
   APP_URL: process.env.APP_URL || 'https://pilotsite.ru',
   SMTP_HOST: process.env.SMTP_HOST,

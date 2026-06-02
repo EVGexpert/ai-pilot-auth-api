@@ -12,6 +12,8 @@ export {
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
   createAuditEvent,
   registerJobHandler,
+  createRefreshToken, findValidRefreshToken,
+  revokeRefreshToken, revokeAllUserTokens, cleanExpiredTokens,
   getStats, getDbHealth,
   close,
   generateActionKey, createActionRequest, findActionByKey,
