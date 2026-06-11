@@ -13,11 +13,11 @@
  * Exit code: 0 = OK, 1 = ошибка
  */
 
-import initSqlJs from 'sql.js'
-import { readFileSync, existsSync, statSync } from 'fs'
+import { DatabaseSync } from 'node:sqlite'
+import { existsSync, statSync } from 'fs'
 import path from 'path'
 
-async function main() {
+function main() {
   const dbPath = process.argv[2] || process.env.DATABASE_PATH || './data/aipilot.db'
 
   const result = {
@@ -53,12 +53,7 @@ async function main() {
   }
 
   try {
-    const SQL = await initSqlJs({
-      locateFile: file => new URL('../node_modules/sql.js/dist/' + file, import.meta.url).pathname
-    })
-
-    const buffer = readFileSync(dbPath)
-    const db = new SQL.Database(buffer)
+    const db = new DatabaseSync(dbPath)
 
     const tables = [
       'users', 'sites', 'chat_sessions', 'messages',
@@ -67,8 +62,8 @@ async function main() {
 
     for (const table of tables) {
       try {
-        const rows = db.exec(`SELECT COUNT(*) as c FROM ${table}`)
-        result[table] = rows[0]?.values[0][0] || 0
+        const row = db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get()
+        result[table] = row?.c || 0
       } catch (e) {
         // Таблица может отсутствовать
         result[table] = -1
@@ -76,8 +71,8 @@ async function main() {
     }
 
     try {
-      const schema = db.exec('SELECT MAX(version) as v FROM schema_version')
-      result.schema_version = schema[0]?.values[0][0] || 0
+      const row = db.prepare('SELECT MAX(version) as v FROM schema_version').get()
+      result.schema_version = row?.v || 0
     } catch (e) {
       result.schema_version = -1
     }

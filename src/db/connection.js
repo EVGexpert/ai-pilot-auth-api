@@ -27,29 +27,17 @@ function sanitize(params) {
 
 export function queryOne(sql, params = []) {
   const stmt = db.prepare(sql)
-  try {
-    return stmt.get(...sanitize(params)) || null
-  } finally {
-    stmt.free()
-  }
+  return stmt.get(...sanitize(params)) || null
 }
 
 export function queryAll(sql, params = []) {
   const stmt = db.prepare(sql)
-  try {
-    return stmt.all(...sanitize(params))
-  } finally {
-    stmt.free()
-  }
+  return stmt.all(...sanitize(params))
 }
 
 export function run(sql, params = []) {
   const stmt = db.prepare(sql)
-  try {
-    return stmt.run(...sanitize(params))
-  } finally {
-    stmt.free()
-  }
+  return stmt.run(...sanitize(params))
 }
 
 export function uid() {

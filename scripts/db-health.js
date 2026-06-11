@@ -17,10 +17,10 @@
  *   1 — Ошибка чтения БД или БД повреждена
  */
 
-import initSqlJs from 'sql.js'
-import { readFileSync, existsSync, statSync } from 'fs'
+import { DatabaseSync } from 'node:sqlite'
+import { existsSync, statSync } from 'fs'
 
-async function main() {
+function main() {
   const dbPath = process.env.DATABASE_PATH || './data/aipilot.db'
   const result = {
     status: 'ok',
@@ -52,28 +52,23 @@ async function main() {
   }
 
   try {
-    const SQL = await initSqlJs({
-      locateFile: file => new URL('../node_modules/sql.js/dist/' + file, import.meta.url).pathname
-    })
-
-    const buffer = readFileSync(dbPath)
-    const db = new SQL.Database(buffer)
+    const db = new DatabaseSync(dbPath)
 
     try {
-      const users = db.exec('SELECT COUNT(*) as c FROM users')
-      result.users = (users[0]?.values[0][0]) || 0
+      const users = db.prepare('SELECT COUNT(*) as c FROM users').get()
+      result.users = users?.c || 0
 
-      const sites = db.exec('SELECT COUNT(*) as c FROM sites')
-      result.sites = (sites[0]?.values[0][0]) || 0
+      const sites = db.prepare('SELECT COUNT(*) as c FROM sites').get()
+      result.sites = sites?.c || 0
 
-      const sessions = db.exec('SELECT COUNT(*) as c FROM chat_sessions')
-      result.sessions = (sessions[0]?.values[0][0]) || 0
+      const sessions = db.prepare('SELECT COUNT(*) as c FROM chat_sessions').get()
+      result.sessions = sessions?.c || 0
 
-      const messages = db.exec('SELECT COUNT(*) as c FROM messages')
-      result.messages = (messages[0]?.values[0][0]) || 0
+      const messages = db.prepare('SELECT COUNT(*) as c FROM messages').get()
+      result.messages = messages?.c || 0
 
-      const schema = db.exec('SELECT MAX(version) as v FROM schema_version')
-      result.schemaVersion = (schema[0]?.values[0][0]) || 0
+      const schema = db.prepare('SELECT MAX(version) as v FROM schema_version').get()
+      result.schemaVersion = schema?.v || 0
     } catch (queryErr) {
       // Таблицы могут ещё не существовать — это нормально для свежей БД
       result.status = 'partial'
