@@ -1,12 +1,14 @@
 {
   "name": "ai-pilot-auth-api",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI Pilot \u2014 SQLite-backed authentication backend",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "db:health": "node scripts/db-health.js"
+    "db:health": "node scripts/db-health.js",
+    "db:stats": "node scripts/db-stats.js",
+    "regression": "bash scripts/regression-persistence.sh"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

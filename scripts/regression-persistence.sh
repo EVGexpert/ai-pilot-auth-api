@@ -97,6 +97,33 @@ else
   fail "Got '$T5', expected '401'"
 fi
 
+info "Test 7: Production без DEPLOY_HEALTH_TOKEN..."
+T7=$(cd "$REPO_DIR" && NODE_ENV=production DATABASE_PATH=/app/data/test.db JWT_SECRET=test-test-test-test-32chars-minimum!! node -e "import('./src/config.js')" 2>&1 || true)
+if echo "$T7" | grep -q "DEPLOY_HEALTH_TOKEN is required"; then
+  pass "Production rejected without DEPLOY_HEALTH_TOKEN"
+else
+  fail "Expected DEPLOY_HEALTH_TOKEN error: $(echo "$T7" | head -1)"
+fi
+
+info "Test 8: db-stats.js без сервера (no DB)..."
+mkdir -p /tmp/test-reg
+T8=$(DATABASE_PATH=/tmp/test-reg/nope.db node "$REPO_DIR/scripts/db-stats.js" 2>&1 || true)
+S8=$(echo "$T8" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','FAIL'),d.get('exists',''))" 2>/dev/null || echo "FAIL")
+if [ "$S8" = "not_found False" ]; then
+  pass "db-stats.js reports not_found for missing db"
+else
+  fail "Got '$S8', expected 'not_found False'"
+fi
+
+info "Test 9: db-stats.js с существующей БД..."
+T9=$(DATABASE_PATH=/tmp/test-reg/real.db node "$REPO_DIR/scripts/db-stats.js" 2>/dev/null)
+S9=$(echo "$T9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','FAIL'),d.get('exists',''))" 2>/dev/null || echo "FAIL")
+if [ "$S9" = "ok True" ]; then
+  pass "db-stats.js reads existing DB"
+else
+  fail "Got '$S9', expected 'ok True'"
+fi
+
 info "Test 6: /api/health/db X-Deploy-Token..."
 T6=$(cd "$REPO_DIR" && PORT=3096 NODE_ENV=development DATABASE_PATH=/tmp/test-reg/health.db JWT_SECRET=test-test-test-test-32chars-minimum!! DEPLOY_HEALTH_TOKEN=deploy-token-123 \
   timeout 12 bash -c '

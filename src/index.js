@@ -20,8 +20,10 @@ await app.register(cors, {
   credentials: true
 })
 
+// Глобальный rate limit (защита от DDoS)
 await app.register(rateLimit, {
-  max: 20,
+  global: true,
+  max: 100,
   timeWindow: '1 minute'
 })
 
@@ -30,7 +32,7 @@ await app.register(sitesRoutes, { prefix: '/api/sites' })
 await app.register(chatRoutes, { prefix: '/api/chat' })
 
 // Simple healthcheck (без авторизации)
-app.get('/api/health', async () => ({ status: 'ok', version: '0.3.0' }))
+app.get('/api/health', async () => ({ status: 'ok', version: '0.4.0' }))
 
 // Deploy healthcheck — X-Deploy-Token, без персональных данных
 app.get('/api/health/db', async (request, reply) => {
@@ -79,7 +81,7 @@ app.post('/api/backup', { preHandler: [authMiddleware, adminOnly] }, async (requ
 const start = async () => {
   try {
     await app.listen({ port: config.PORT, host: '0.0.0.0' })
-    console.log(`Auth API v0.3.0 running on port ${config.PORT}`)
+    console.log(`Auth API v0.4.0 running on port ${config.PORT}`)
   } catch (err) {
     app.log.error(err)
     process.exit(1)

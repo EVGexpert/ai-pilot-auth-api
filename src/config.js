@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'fs'
 
-export const APP_VERSION = '0.3.0'
+export const APP_VERSION = '0.4.0'
 
 export const NODE_ENV = process.env.NODE_ENV || 'development'
 const isProduction = NODE_ENV === 'production'
@@ -43,6 +43,14 @@ function validateProductionConfig() {
     throw new Error(
       'JWT_SECRET must be at least 32 characters in production. ' +
       'Generate one: openssl rand -hex 32'
+    )
+  }
+
+  // DEPLOY_HEALTH_TOKEN обязателен (для healthcheck при деплое)
+  if (!process.env.DEPLOY_HEALTH_TOKEN) {
+    throw new Error(
+      'DEPLOY_HEALTH_TOKEN is required in production. ' +
+      'Set it in GitHub Secrets: DEPLOY_HEALTH_TOKEN, also in docker run -e DEPLOY_HEALTH_TOKEN=...'
     )
   }
 }

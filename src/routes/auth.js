@@ -5,15 +5,23 @@ import {
   createVerification, findVerification, deleteVerificationsByUser,
   findSitesByUser, allSites,
   createRefreshToken, findValidRefreshToken, revokeRefreshToken,
-  revokeAllUserTokens
+  revokeAllUserTokens,
+  createAuditEvent
 } from '../db.js'
 import { generateToken, authMiddleware } from '../middleware/auth.js'
 import { sendVerificationEmail } from '../email.js'
 
 export default async function authRoutes(app) {
 
-  // Регистрация
-  app.post('/register', async (request, reply) => {
+  // Регистрация — rate limit 3/час/IP
+  app.post('/register', {
+    config: {
+      rateLimit: {
+        max: 3,
+        timeWindow: '1 hour'
+      }
+    }
+  }, async (request, reply) => {
     const { email, password, name } = request.body || {}
     if (!email || !password) return reply.status(400).send({ error: 'Email и пароль обязательны' })
     if (password.length < 6) return reply.status(400).send({ error: 'Пароль минимум 6 символов' })
@@ -32,6 +40,14 @@ export default async function authRoutes(app) {
     const token = generateToken(user)
     const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
 
+    createAuditEvent({
+      userId: user.id, eventType: 'register',
+      entityType: 'user', entityId: user.id,
+      payload: { email, role },
+      ipAddress: request.ip, userAgent: request.headers['user-agent'],
+      requestId: request.requestId, status: 'completed'
+    })
+
     return reply.status(201).send({
       token,
       refreshToken,
@@ -40,19 +56,52 @@ export default async function authRoutes(app) {
     })
   })
 
-  // Вход
-  app.post('/login', async (request, reply) => {
+  // Вход — rate limit 5/мин/IP
+  app.post('/login', {
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute'
+      }
+    }
+  }, async (request, reply) => {
     const { email, password } = request.body || {}
     if (!email || !password) return reply.status(400).send({ error: 'Email и пароль обязательны' })
 
     const user = findUserByEmail(email)
-    if (!user) return reply.status(401).send({ error: 'Неверный email или пароль' })
+    if (!user) {
+      createAuditEvent({
+        eventType: 'failed_login',
+        entityType: 'user', entityId: email,
+        payload: { email, reason: 'user_not_found' },
+        ipAddress: request.ip, userAgent: request.headers['user-agent'],
+        requestId: request.requestId, status: 'failed'
+      })
+      return reply.status(401).send({ error: 'Неверный email или пароль' })
+    }
 
     const valid = await verifyPassword(password, user.password_hash)
-    if (!valid) return reply.status(401).send({ error: 'Неверный email или пароль' })
+    if (!valid) {
+      createAuditEvent({
+        userId: user.id, eventType: 'failed_login',
+        entityType: 'user', entityId: user.id,
+        payload: { email, reason: 'wrong_password' },
+        ipAddress: request.ip, userAgent: request.headers['user-agent'],
+        requestId: request.requestId, status: 'failed'
+      })
+      return reply.status(401).send({ error: 'Неверный email или пароль' })
+    }
 
     const token = generateToken(user)
     const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+
+    createAuditEvent({
+      userId: user.id, eventType: 'login',
+      entityType: 'user', entityId: user.id,
+      payload: { email, role: user.role },
+      ipAddress: request.ip, userAgent: request.headers['user-agent'],
+      requestId: request.requestId, status: 'completed'
+    })
 
     let siteList
     if (user.role === 'admin') {
@@ -77,8 +126,15 @@ export default async function authRoutes(app) {
     })
   })
 
-  // Обновить access token по refresh token
-  app.post('/refresh', async (request, reply) => {
+  // Обновить access token по refresh token — rate limit 20/мин/user
+  app.post('/refresh', {
+    config: {
+      rateLimit: {
+        max: 20,
+        timeWindow: '1 minute'
+      }
+    }
+  }, async (request, reply) => {
     const { refreshToken } = request.body || {}
     if (!refreshToken) return reply.status(400).send({ error: 'refreshToken обязателен' })
 
@@ -106,8 +162,6 @@ export default async function authRoutes(app) {
     revokeRefreshToken(refreshToken)
     return reply.send({ message: 'Выход выполнен' })
   })
-
-
 
   // Подтверждение email
   app.post('/verify-email', async (request, reply) => {

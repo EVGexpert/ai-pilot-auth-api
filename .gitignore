@@ -4,4 +4,5 @@ data/
 *.local
 .DS_Store
 .codeindex/
+.codeindex.yaml
 READ_ME.md

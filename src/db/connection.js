@@ -4,7 +4,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-export const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'aipilot.db')
+import { config } from '../config.js'
+export const DB_PATH = config.DATABASE_PATH
 const JSON_PATH = DB_PATH.replace(/\.db$/, '.json')
 
 const dir = path.dirname(DB_PATH)
@@ -101,6 +102,14 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_verifications_user ON email_verification
 // ============================================================
 // MIGRATIONS
 // ============================================================
+db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT)')
+
+// Защита: проверка, что таблицы существуют после schema exec
+const schemaTables = queryOne("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'")
+if (!schemaTables?.c || schemaTables.c < 2) {
+  console.warn('[DB] ⚠️  Схема не инициализирована: пустая БД.')
+}
+
 const verRow = queryOne('SELECT MAX(version) as v FROM schema_version')
 let ver = verRow?.v || 0
 
@@ -180,6 +189,33 @@ if (ver < 8) {
   ver = 8
 }
 
+if (ver < 9) {
+  db.exec(`CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL,
+    user_agent TEXT,
+    ip_address TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)')
+  run('INSERT INTO schema_version (version, applied_at) VALUES (9, ?)', [now()])
+  ver = 9
+}
+
+if (ver < 10) {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, created_at)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_actions_site_status ON action_requests(site_id, status)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)')
+  run('INSERT INTO schema_version (version, applied_at) VALUES (10, ?)', [now()])
+  console.log('[DB] Migration v10: indexes added')
+  ver = 10
+}
+
 // ============================================================
 // JSON MIGRATION (legacy)
 // ============================================================
@@ -241,6 +277,36 @@ if (userCount === 0) {
   }
 } else {
   console.log(`[DB] ✅ БД загружена: ${userCount} пользователей`)
+}
+
+// ============================================================
+// STARTUP INTEGRITY CHECK — проверка обязательных таблиц
+// ============================================================
+const MANDATORY_TABLES = ['users', 'sites', 'chat_sessions', 'messages', 'schema_version']
+
+for (const table of MANDATORY_TABLES) {
+  try {
+    const row = queryOne(`SELECT name FROM sqlite_master WHERE type='table' AND name='${table}'`)
+    if (!row) {
+      console.error(`[DB] ❌ Обязательная таблица '${table}' отсутствует!`)
+      if (config.NODE_ENV === 'production') {
+        console.error('[DB] БД повреждена или неполная. Выход.')
+        process.exit(1)
+      }
+    }
+  } catch (e) {
+    console.warn(`[DB] ⚠️  Не удалось проверить таблицу '${table}': ${e.message}`)
+  }
+}
+
+// Проверка доступности чтения
+if (userCount > 0) {
+  try {
+    const msgCount = queryOne('SELECT COUNT(*) as c FROM messages')?.c || 0
+    console.log(`[DB] 📊  Сообщений: ${msgCount}`)
+  } catch (e) {
+    console.warn('[DB] ⚠️  Не удалось прочитать messages:', e.message)
+  }
 }
 
 // ============================================================
