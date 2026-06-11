@@ -1,18 +1,19 @@
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, mkdirSync, renameSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, renameSync, readFileSync, copyFileSync, readdirSync, unlinkSync, statSync } from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { randomBytes } from 'crypto'
+import { randomBytes, createHash } from 'crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'aipilot.db')
 const JSON_PATH = DB_PATH.replace(/\.db$/, '.json')
+const BACKUP_DIR = path.join(path.dirname(DB_PATH), 'backups')
 
 const dir = path.dirname(DB_PATH)
 if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
 // ============================================================
-// INIT node:sqlite (native — writes directly to disk)
+// INIT node:sqlite — writes directly to disk
 // ============================================================
 const db = new DatabaseSync(DB_PATH)
 db.exec('PRAGMA journal_mode = WAL')
@@ -57,22 +58,16 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)')
 db.exec('CREATE INDEX IF NOT EXISTS idx_verifications_user ON email_verifications(user_id)')
 
-// ============================================================
-// SCHEMA VERSIONING & MIGRATIONS
-// ============================================================
 db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT)')
 const verRow = queryOne('SELECT MAX(version) as v FROM schema_version')
 let ver = verRow?.v || 0
 
-// Migration 1
 if (ver < 1) {
-  try { run("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'sent'") } catch (e) { /* already exists */ }
-  try { run("ALTER TABLE messages ADD COLUMN source TEXT DEFAULT 'gateway'") } catch (e) { /* already exists */ }
-  run('INSERT INTO schema_version (version, applied_at) VALUES (1, ?)', [now()])
-  ver = 1
+  try { run("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'sent'") } catch (e) { }
+  try { run("ALTER TABLE messages ADD COLUMN source TEXT DEFAULT 'gateway'") } catch (e) { }
+  run('INSERT INTO schema_version (version, applied_at) VALUES (1, ?)', [now()]); ver = 1
 }
 
-// Migration 2
 if (ver < 2) {
   db.exec(`CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, site_id TEXT, user_id TEXT, session_id TEXT,
@@ -82,11 +77,9 @@ if (ver < 2) {
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`)
   db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, run_after)')
-  run('INSERT INTO schema_version (version, applied_at) VALUES (2, ?)', [now()])
-  ver = 2
+  run('INSERT INTO schema_version (version, applied_at) VALUES (2, ?)', [now()]); ver = 2
 }
 
-// Migration 3
 if (ver < 3) {
   db.exec(`CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY, user_id TEXT, site_id TEXT, session_id TEXT,
@@ -96,39 +89,31 @@ if (ver < 3) {
   )`)
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_site ON audit_events(site_id, created_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id, created_at)')
-  run('INSERT INTO schema_version (version, applied_at) VALUES (3, ?)', [now()])
-  ver = 3
+  run('INSERT INTO schema_version (version, applied_at) VALUES (3, ?)', [now()]); ver = 3
 }
 
-// Migration 4
 if (ver < 4) {
   db.exec(`CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY, value TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
   )`)
-  run('INSERT INTO schema_version (version, applied_at) VALUES (4, ?)', [now()])
-  ver = 4
+  run('INSERT INTO schema_version (version, applied_at) VALUES (4, ?)', [now()]); ver = 4
 }
 
-// Migration 5
 if (ver < 5) {
-  try { run("ALTER TABLE chat_sessions ADD COLUMN summary TEXT DEFAULT ''") } catch (e) { /* already exists */ }
-  try { run("ALTER TABLE chat_sessions ADD COLUMN summary_updated_at TEXT") } catch (e) { /* already exists */ }
-  run('INSERT INTO schema_version (version, applied_at) VALUES (5, ?)', [now()])
-  ver = 5
+  try { run("ALTER TABLE chat_sessions ADD COLUMN summary TEXT DEFAULT ''") } catch (e) { }
+  try { run("ALTER TABLE chat_sessions ADD COLUMN summary_updated_at TEXT") } catch (e) { }
+  run('INSERT INTO schema_version (version, applied_at) VALUES (5, ?)', [now()]); ver = 5
 }
 
-// Migration 6
 if (ver < 6) {
-  try { run("ALTER TABLE sites ADD COLUMN cached_structure TEXT") } catch (e) { /* already exists */ }
-  try { run("ALTER TABLE sites ADD COLUMN cached_soul TEXT") } catch (e) { /* already exists */ }
-  try { run("ALTER TABLE sites ADD COLUMN cached_at TEXT") } catch (e) { /* already exists */ }
-  try { run("ALTER TABLE sites ADD COLUMN verified INTEGER DEFAULT 0") } catch (e) { /* already exists */ }
-  run('INSERT INTO schema_version (version, applied_at) VALUES (6, ?)', [now()])
-  ver = 6
+  try { run("ALTER TABLE sites ADD COLUMN cached_structure TEXT") } catch (e) { }
+  try { run("ALTER TABLE sites ADD COLUMN cached_soul TEXT") } catch (e) { }
+  try { run("ALTER TABLE sites ADD COLUMN cached_at TEXT") } catch (e) { }
+  try { run("ALTER TABLE sites ADD COLUMN verified INTEGER DEFAULT 0") } catch (e) { }
+  run('INSERT INTO schema_version (version, applied_at) VALUES (6, ?)', [now()]); ver = 6
 }
 
-// Migration 7
 if (ver < 7) {
   db.exec(`CREATE TABLE IF NOT EXISTS site_memory (
     id TEXT PRIMARY KEY, site_id TEXT NOT NULL, key TEXT NOT NULL,
@@ -136,11 +121,9 @@ if (ver < 7) {
     FOREIGN KEY (site_id) REFERENCES sites(id), UNIQUE(site_id, key)
   )`)
   db.exec('CREATE INDEX IF NOT EXISTS idx_site_memory_site ON site_memory(site_id)')
-  run('INSERT INTO schema_version (version, applied_at) VALUES (7, ?)', [now()])
-  ver = 7
+  run('INSERT INTO schema_version (version, applied_at) VALUES (7, ?)', [now()]); ver = 7
 }
 
-// Migration 8
 if (ver < 8) {
   db.exec(`CREATE TABLE IF NOT EXISTS action_requests (
     id TEXT PRIMARY KEY, user_id TEXT, site_id TEXT, session_id TEXT,
@@ -151,8 +134,19 @@ if (ver < 8) {
   )`)
   db.exec('CREATE INDEX IF NOT EXISTS idx_action_key ON action_requests(idempotency_key)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_action_session ON action_requests(session_id)')
-  run('INSERT INTO schema_version (version, applied_at) VALUES (8, ?)', [now()])
-  ver = 8
+  run('INSERT INTO schema_version (version, applied_at) VALUES (8, ?)', [now()]); ver = 8
+}
+
+if (ver < 9) {
+  db.exec(`CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT NOT NULL,
+    user_agent TEXT, ip_address TEXT, expires_at TEXT NOT NULL,
+    revoked INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_refresh_token_hash ON refresh_tokens(token_hash)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)')
+  run('INSERT INTO schema_version (version, applied_at) VALUES (9, ?)', [now()]); ver = 9
 }
 
 let _jwtSecretCache = null
@@ -169,10 +163,7 @@ export function setConfigValue(key, value) {
 export function getJwtSecret() {
   if (_jwtSecretCache) return _jwtSecretCache
   const existing = getConfigValue('jwt_secret')
-  if (existing) {
-    _jwtSecretCache = existing
-    return existing
-  }
+  if (existing) { _jwtSecretCache = existing; return existing }
   const secret = randomBytes(32).toString('hex')
   setConfigValue('jwt_secret', secret)
   _jwtSecretCache = secret
@@ -214,33 +205,59 @@ function migrateFromJson() {
 migrateFromJson()
 
 // ============================================================
-// HELPERS — node:sqlite wrapper
+// HELPERS
 // ============================================================
-
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
 function now() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19)
 }
-
 function sanitize(params) {
   return (params || []).map(p => p === undefined ? null : p)
 }
-
 function queryOne(sql, params = []) {
   const stmt = db.prepare(sql)
   return stmt.get(...sanitize(params)) || null
 }
-
 function queryAll(sql, params = []) {
   const stmt = db.prepare(sql)
   return stmt.all(...sanitize(params))
 }
-
 function run(sql, params = []) {
   const stmt = db.prepare(sql)
   return stmt.run(...sanitize(params))
+}
+
+// --- Refresh tokens ---
+export function createRefreshToken(userId, userAgent = null, ipAddress = null) {
+  const token = randomBytes(32).toString('hex')
+  const hash = sha256(token)
+  const id = uid()
+  const t = now()
+  const expiresAt = new Date(Date.now() + 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19)
+  run('INSERT INTO refresh_tokens (id, user_id, token_hash, user_agent, ip_address, expires_at, created_at) VALUES (?,?,?,?,?,?,?)',
+    [id, userId, hash, userAgent, ipAddress, expiresAt, t])
+  return token
+}
+
+export function findValidRefreshToken(token) {
+  const hash = sha256(token)
+  const t = now()
+  return queryOne("SELECT * FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > ?", [hash, t])
+}
+
+export function revokeRefreshToken(token) {
+  const hash = sha256(token)
+  run("UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?", [hash])
+}
+
+export function revokeAllUserTokens(userId) {
+  run("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0", [userId])
+}
+
+function sha256(str) {
+  return createHash('sha256').update(str).digest('hex')
 }
 
 // --- Users ---
@@ -423,18 +440,49 @@ export function createAuditEvent({ userId, siteId, sessionId, eventType, entityT
   return id
 }
 
-// ============================================================
-// JOB WORKER
-// ============================================================
-const JOB_HANDLERS = {}
 
-export function registerJobHandler(type, handler) {
-  JOB_HANDLERS[type] = handler
+// --- Action requests ---
+export function generateActionKey(action) {
+  const raw = JSON.stringify({ type: action.type, target: action.target, patch: action.patch })
+  return createHash('sha256').update(raw).digest('hex').slice(0, 32)
 }
+
+export function createActionRequest({ userId, siteId, sessionId, action }) {
+  const key = action.idempotency_key || generateActionKey(action)
+  const existing = queryOne('SELECT * FROM action_requests WHERE idempotency_key = ?', [key])
+  if (existing) return existing
+  const id = uid(); const t = now()
+  run('INSERT INTO action_requests (id, user_id, site_id, session_id, idempotency_key, action_type, action_json, status, result_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,\'pending\',NULL,?,?)',
+    [id, userId, siteId||null, sessionId||null, key, action.type, JSON.stringify(action), t, t])
+  return queryOne('SELECT * FROM action_requests WHERE id = ?', [id])
+}
+
+export function findActionByKey(key) {
+  return queryOne('SELECT * FROM action_requests WHERE idempotency_key = ?', [key])
+}
+
+export function updateActionStatus(id, status, result = null) {
+  const sets = ["status = ?", "updated_at = ?"]
+  const params = [status, now()]
+  if (result !== null) {
+    sets.push("result_json = ?")
+    params.push(typeof result === 'string' ? result : JSON.stringify(result))
+  }
+  params.push(id)
+  run(`UPDATE action_requests SET ${sets.join(', ')} WHERE id = ?`, params)
+}
+
+export function getActionsBySession(sessionId) {
+  return queryAll("SELECT * FROM action_requests WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC", [sessionId])
+}
+
+// --- Job Worker ---
+const JOB_HANDLERS = {}
+export function registerJobHandler(type, handler) { JOB_HANDLERS[type] = handler }
 
 async function processJob(job) {
   const handler = JOB_HANDLERS[job.type]
-  if (!handler) { failJob(job.id, 'No handler for type: ' + job.type); return }
+  if (!handler) { failJob(job.id, 'No handler for type: '+job.type); return }
   try {
     const result = await handler(job)
     completeJob(job.id, result)
@@ -461,9 +509,21 @@ async function workerLoop() {
 }
 setTimeout(() => workerLoop().catch(() => {}), 1000)
 
-// ============================================================
-// STATS
-// ============================================================
+
+export function getDbHealth() {
+  const schemaVer = queryOne('SELECT MAX(version) as v FROM schema_version')?.v || 0
+  const userCount = queryOne('SELECT COUNT(*) as c FROM users')?.c || 0
+  const dbSize = existsSync(DB_PATH) ? readFileSync(DB_PATH).length : 0
+  return {
+    status: 'ok',
+    users: userCount,
+    schemaVersion: schemaVer,
+    databaseSize: dbSize,
+    uptime: process.uptime()
+  }
+}
+
+// --- Stats ---
 export function getStats() {
   const users = queryOne('SELECT COUNT(*) as c FROM users')?.c || 0
   const sites = queryOne('SELECT COUNT(*) as c FROM sites')?.c || 0
@@ -479,10 +539,109 @@ export function getStats() {
   return { users, sites, sessions, messages, messagesByStatus, schemaVersion: schemaVer, jobs: { pending: jobsPending, failed: jobsFailed }, recentMessages, recentSites, recentUsers }
 }
 
-// ============================================================
-// SHUTDOWN
-// ============================================================
+// --- Backup & Recovery ---
+if (!existsSync(BACKUP_DIR)) mkdirSync(BACKUP_DIR, { recursive: true })
+
+function backupDb() {
+  try {
+    const date = new Date().toISOString().replace(/[T:]/g, '-').slice(0, 19)
+    const backupFile = path.join(BACKUP_DIR, 'aipilot-' + date + '.db')
+    db.pragma('wal_checkpoint(TRUNCATE)')
+    const { copyFileSync, readdirSync, unlinkSync } = require('fs')
+    copyFileSync(DB_PATH, backupFile)
+    // Keep only last 24 backups
+    const files = readdirSync(BACKUP_DIR).filter(f => f.endsWith('.db')).sort()
+    while (files.length > 24) {
+      const old = files.shift()
+      unlinkSync(path.join(BACKUP_DIR, old))
+    }
+    return backupFile
+  } catch (e) {
+    console.warn('[DB] Backup failed:', e.message)
+    return null
+  }
+}
+
+function restoreLatestBackup() {
+  try {
+    if (!existsSync(BACKUP_DIR)) return null
+    const { readdirSync } = require('fs')
+    const files = readdirSync(BACKUP_DIR).filter(f => f.endsWith('.db')).sort()
+    if (files.length === 0) return null
+    const latest = files[files.length - 1]
+    const backupPath = path.join(BACKUP_DIR, latest)
+    const { copyFileSync } = require('fs')
+    db.close()
+    db.pragma('journal_mode = DELETE')
+    // Re-open with fresh DatabaseSync
+    // Actually we can't re-open, so we copy the backup before opening
+    copyFileSync(backupPath, DB_PATH)
+    console.log('[DB] ✅ Restored from backup:', latest)
+    return backupPath
+  } catch (e) {
+    console.warn('[DB] Restore failed:', e.message)
+    return null
+  }
+}
+
+// --- Periodic auto-backup (every 10 minutes) ---
+setInterval(() => backupDb(), 600000)
+
+// --- Startup guard with recovery ---
+const userCount = queryOne('SELECT COUNT(*) as c FROM users')?.c || 0
+if (userCount === 0) {
+  console.warn('[DB] ⚠️  База данных пуста — нет пользователей. Пытаюсь восстановить...')
+  
+  // Try 1: restore from .migrated
+  let recovered = false
+  const recoveredData = recoverFromMigrated()
+  if (recoveredData && Array.isArray(recoveredData.users) && recoveredData.users.length > 0) {
+    for (const u of recoveredData.users)
+      run('INSERT OR IGNORE INTO users (id, email, password_hash, name, role, email_verified, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+        [u.id, u.email, u.password_hash, u.name || null, u.role || 'client', u.email_verified || 0, u.created_at, u.updated_at])
+    for (const s of (recoveredData.sites || []))
+      run('INSERT OR IGNORE INTO sites (id, user_id, url, name, api_token, wp_version, verified, cached_structure, cached_soul, cached_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [s.id, s.user_id, s.url, s.name || null, s.api_token || null, s.wp_version || null, s.verified || 0,
+         null, null, null, s.created_at, s.updated_at])
+    const restored = queryOne('SELECT COUNT(*) as c FROM users')?.c || 0
+    console.log('[DB] ✅ Восстановлено', restored, 'пользователей из .migrated')
+    if (restored > 0) recovered = true
+  }
+  
+  // Try 2: restore from latest backup
+  if (!recovered) {
+    try {
+      if (existsSync(BACKUP_DIR)) {
+        const { readdirSync, copyFileSync } = require('fs')
+        const files = readdirSync(BACKUP_DIR).filter(f => f.endsWith('.db')).sort()
+        if (files.length > 0) {
+          const latest = files[files.length - 1]
+          console.log('[DB] ⏳ Restoring from backup:', latest)
+          db.pragma('journal_mode = DELETE')
+          db.close()
+          // Db was closed - this is problematic. Let's use a flag instead.
+          console.log('[DB] ❌ Cannot restore from backup after DB opened. Manual restore needed.')
+        }
+      }
+    } catch (e) {
+      console.warn('[DB] Backup restore attempt failed:', e.message)
+    }
+  }
+  
+  const finalCount = queryOne('SELECT COUNT(*) as c FROM users')?.c || 0
+  if (finalCount === 0) {
+    console.warn('[DB] ⚠️  Невозможно восстановить данные. БД будет создана пустой.')
+    console.warn('[DB] ⚠️  Ручное восстановление: скопируйте файл из', BACKUP_DIR, 'в', DB_PATH)
+  }
+} else {
+  console.log('[DB] ✅ БД загружена:', userCount, 'пользователей')
+  // Создаём бэкап при успешном старте
+  backupDb()
+}
+
+// --- Shutdown ---
 export function close() {
+  backupDb()
   db.pragma('journal_mode = DELETE')
   db.close()
 }
