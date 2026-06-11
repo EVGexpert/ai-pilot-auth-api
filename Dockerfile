@@ -23,4 +23,4 @@ EXPOSE 3001
 #   docker run -v /host/path:/app/data ...
 VOLUME ["/app/data"]
 
-CMD ["node", "src/index.js"]
+CMD ["node", "--experimental-sqlite", "src/index.js"]
