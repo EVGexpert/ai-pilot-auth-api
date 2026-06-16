@@ -6,6 +6,7 @@ import sitesRoutes from './routes/sites.js'
 import chatRoutes from './routes/chat.js'
 import { config } from './config.js'
 import { getStats, getDbHealth } from './db.js'
+import { queryOne } from './db/connection.js'
 import { authMiddleware, adminOnly } from './middleware/auth.js'
 
 
@@ -31,8 +32,44 @@ await app.register(authRoutes, { prefix: '/api/auth' })
 await app.register(sitesRoutes, { prefix: '/api/sites' })
 await app.register(chatRoutes, { prefix: '/api/chat' })
 
-// Simple healthcheck (без авторизации)
-app.get('/api/health', async () => ({ status: 'ok', version: '0.4.0' }))
+// Healthcheck — без авторизации, проверяет БД, диск, память
+app.get('/api/health', async () => {
+  const checks = {
+    database: false,
+    disk: false,
+    memory: false
+  }
+
+  try {
+    // ✅ Проверка БД
+    queryOne('SELECT 1')
+    checks.database = true
+  } catch (e) {
+    console.error('[Health] DB check failed:', e.message)
+  }
+
+  try {
+    // ✅ Проверка диска
+    const { statfsSync } = await import('fs')
+    const stats = statfsSync('/app/data')
+    checks.disk = stats.bavail / stats.blocks > 0.1  // > 10% свободно
+  } catch (e) {
+    console.error('[Health] Disk check failed:', e.message)
+  }
+
+  // ✅ Проверка памяти
+  const memUsage = process.memoryUsage()
+  checks.memory = memUsage.heapUsed / memUsage.heapTotal < 0.9  // < 90%
+
+  const healthy = checks.database && checks.disk && checks.memory
+
+  return {
+    status: healthy ? 'ok' : 'degraded',
+    version: '0.4.0',
+    checks,
+    timestamp: new Date().toISOString()
+  }
+})
 
 // Deploy healthcheck — X-Deploy-Token, без персональных данных
 app.get('/api/health/db', async (request, reply) => {
