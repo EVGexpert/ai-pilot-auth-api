@@ -10,12 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ✅ Используем GitHub Secrets
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.1
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: JWT_SECRET,GATEWAY_TOKEN,DEPLOY_HEALTH_TOKEN
           timeout: 180s
           script: |
             set -e
