@@ -304,7 +304,6 @@ export function close() {
   db.pragma('journal_mode = DELETE')
   db.close()
 }
-process.on('SIGINT', () => { close(); process.exit(0) })
-process.on('SIGTERM', () => { close(); process.exit(0) })
+// Shutdown handlers moved to src/index.js for graceful HTTP server close
 
 export default db
