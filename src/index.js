@@ -25,7 +25,7 @@ await app.register(cors, {
 // Глобальный rate limit (защита от DDoS)
 await app.register(rateLimit, {
   global: true,
-  max: 100,
+  max: 1000,
   timeWindow: '1 minute'
 })
 
