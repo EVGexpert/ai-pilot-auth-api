@@ -17,7 +17,7 @@ export default async function authRoutes(app) {
   app.post('/register', {
     config: {
       rateLimit: {
-        max: 30,
+        max: 3,
         timeWindow: '1 hour'
       }
     }
@@ -26,21 +26,21 @@ export default async function authRoutes(app) {
     if (!email || !password) return reply.status(400).send({ error: 'Email и пароль обязательны' })
     if (password.length < 6) return reply.status(400).send({ error: 'Пароль минимум 6 символов' })
 
-    if (findUserByEmail(email)) return reply.status(409).send({ error: 'Email уже зарегистрирован' })
+    if (await findUserByEmail(email)) return reply.status(409).send({ error: 'Email уже зарегистрирован' })
 
     const role = email.includes('admin') ? 'admin' : 'client'
     const passwordHash = await hashPassword(password)
-    const user = createUser({ email, passwordHash, name, role })
+    const user = await createUser({ email, passwordHash, name, role })
 
     const code = Math.random().toString(36).slice(2, 8).toUpperCase()
-    createVerification(user.id, code)
+    await createVerification(user.id, code)
 
     try { await sendVerificationEmail(email, code) } catch (err) { console.error('Email failed:', err.message) }
 
     const token = generateToken(user)
-    const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+    const refreshToken = await createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
 
-    createAuditEvent({
+    await createAuditEvent({
       userId: user.id, eventType: 'register',
       entityType: 'user', entityId: user.id,
       payload: { email, role },
@@ -60,7 +60,7 @@ export default async function authRoutes(app) {
   app.post('/login', {
     config: {
       rateLimit: {
-        max: 50,
+        max: 5,
         timeWindow: '1 minute'
       }
     }
@@ -68,9 +68,9 @@ export default async function authRoutes(app) {
     const { email, password } = request.body || {}
     if (!email || !password) return reply.status(400).send({ error: 'Email и пароль обязательны' })
 
-    const user = findUserByEmail(email)
+    const user = await findUserByEmail(email)
     if (!user) {
-      createAuditEvent({
+      await createAuditEvent({
         eventType: 'failed_login',
         entityType: 'user', entityId: email,
         payload: { email, reason: 'user_not_found' },
@@ -82,7 +82,7 @@ export default async function authRoutes(app) {
 
     const valid = await verifyPassword(password, user.password_hash)
     if (!valid) {
-      createAuditEvent({
+      await createAuditEvent({
         userId: user.id, eventType: 'failed_login',
         entityType: 'user', entityId: user.id,
         payload: { email, reason: 'wrong_password' },
@@ -93,9 +93,9 @@ export default async function authRoutes(app) {
     }
 
     const token = generateToken(user)
-    const refreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+    const refreshToken = await createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
 
-    createAuditEvent({
+    await createAuditEvent({
       userId: user.id, eventType: 'login',
       entityType: 'user', entityId: user.id,
       payload: { email, role: user.role },
@@ -106,13 +106,13 @@ export default async function authRoutes(app) {
     let siteList
     if (user.role === 'admin') {
       const seen = new Set()
-      siteList = allSites().filter(s => {
+      siteList = (await allSites()).filter(s => {
         if (seen.has(s.url)) return false
         seen.add(s.url)
         return true
       })
     } else {
-      siteList = findSitesByUser(user.id)
+      siteList = await findSitesByUser(user.id)
     }
     const sites = siteList.map(s => ({
       id: s.id, url: s.url, name: s.name, wp_version: s.wp_version
@@ -138,18 +138,18 @@ export default async function authRoutes(app) {
     const { refreshToken } = request.body || {}
     if (!refreshToken) return reply.status(400).send({ error: 'refreshToken обязателен' })
 
-    const stored = findValidRefreshToken(refreshToken)
+    const stored = await findValidRefreshToken(refreshToken)
     if (!stored) return reply.status(401).send({ error: 'Refresh token недействителен или истёк' })
 
-    const user = findUserById(stored.user_id)
+    const user = await findUserById(stored.user_id)
     if (!user) return reply.status(404).send({ error: 'Пользователь не найден' })
 
     // Создаём новый access token
     const token = generateToken(user)
 
     // Отзываем старый refresh token и выдаём новый (rotation)
-    revokeRefreshToken(refreshToken)
-    const newRefreshToken = createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
+    await revokeRefreshToken(refreshToken)
+    const newRefreshToken = await createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
 
     return reply.send({ token, refreshToken: newRefreshToken })
   })
@@ -159,29 +159,29 @@ export default async function authRoutes(app) {
     const { refreshToken } = request.body || {}
     if (!refreshToken) return reply.status(400).send({ error: 'refreshToken обязателен' })
 
-    revokeRefreshToken(refreshToken)
+    await revokeRefreshToken(refreshToken)
     return reply.send({ message: 'Выход выполнен' })
   })
 
   // Подтверждение email
   app.post('/verify-email', async (request, reply) => {
     const { email, code } = request.body || {}
-    const user = findUserByEmail(email)
+    const user = await findUserByEmail(email)
     if (!user) return reply.status(404).send({ error: 'Пользователь не найден' })
 
-    const verification = findVerification(user.id, code)
+    const verification = await findVerification(user.id, code)
     if (!verification) return reply.status(400).send({ error: 'Неверный или просроченный код' })
 
-    updateUser(user.id, { email_verified: 1 })
-    deleteVerificationsByUser(user.id)
+    await updateUser(user.id, { email_verified: 1 })
+    await deleteVerificationsByUser(user.id)
     return reply.send({ message: 'Email подтверждён' })
   })
 
   // Информация о пользователе
   app.get('/me', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const user = findUserById(request.user.sub)
+    const user = await findUserById(request.user.sub)
     if (!user) return reply.status(404).send({ error: 'User not found' })
-    const sites = findSitesByUser(user.id).map(s => ({
+    const sites = (await findSitesByUser(user.id)).map(s => ({
       id: s.id, url: s.url, name: s.name, wp_version: s.wp_version, created_at: s.created_at
     }))
     return reply.send({ user: { id: user.id, email: user.email, name: user.name, role: user.role, emailVerified: !!user.email_verified }, sites })
@@ -189,7 +189,7 @@ export default async function authRoutes(app) {
 
   // Выход со всех устройств
   app.post('/logout-all', { preHandler: [authMiddleware] }, async (request, reply) => {
-    revokeAllUserTokens(request.user.sub)
+    await revokeAllUserTokens(request.user.sub)
     return reply.send({ message: 'Все сессии завершены' })
   })
 }

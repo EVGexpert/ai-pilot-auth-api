@@ -1,8 +1,10 @@
 // db.js — barrel re-export from modular src/db/index.js
-// При импорте '.. / db.js' загружается вся БД через connection.js
+// При импорте '../db.js' загружается вся БД через connection.js
 // Все экспорты идентичны старому монолитному db.js
+// Все функции теперь async — callers должны использовать await
 
 export {
+  DB_MODE, ping,
   getConfigValue, setConfigValue,
   findUserByEmail, findUserById, createUser, updateUser,
   createVerification, findVerification, deleteVerificationsByUser,

@@ -1,7 +1,8 @@
 // db/index.js — единая точка входа в БД-модули
 // Все экспорты идентичны старому db.js, просто разнесены по модулям
+// Все функции теперь async — callers должны использовать await
 
-export { close } from './connection.js'
+export { close, DB_PATH, DB_MODE, ping } from './connection.js'
 
 export { getConfigValue, setConfigValue } from './config.js'
 

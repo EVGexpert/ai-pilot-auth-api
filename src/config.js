@@ -10,23 +10,25 @@ const isProduction = NODE_ENV === 'production'
 function validateProductionConfig() {
   if (!isProduction) return
 
-  // DATABASE_PATH обязателен
-  if (!process.env.DATABASE_PATH) {
+  // DATABASE_PATH или DATABASE_URL обязателен
+  if (!process.env.DATABASE_PATH && !process.env.DATABASE_URL) {
     throw new Error(
-      'DATABASE_PATH is required in production. ' +
-      'Example: DATABASE_PATH=/app/data/aipilot.db'
+      'DATABASE_PATH or DATABASE_URL is required in production. ' +
+      'Example: DATABASE_PATH=/app/data/aipilot.db or DATABASE_URL=postgresql://user:pass@host:5432/db'
     )
   }
 
-  // Запрещаем опасные пути для БД
-  const dangerousPaths = ['/tmp', '/var/tmp', '/dev/shm', '/app/src', '/src', './src']
-  const dbPath = process.env.DATABASE_PATH
-  for (const bad of dangerousPaths) {
-    if (dbPath.startsWith(bad)) {
-      throw new Error(
-        `DATABASE_PATH (${dbPath}) points to a temporary or source directory. ` +
-        `Use a persistent volume path like /app/data/`
-      )
+  // Запрещаем опасные пути для БД (только для SQLite mode)
+  if (process.env.DATABASE_PATH) {
+    const dangerousPaths = ['/tmp', '/var/tmp', '/dev/shm', '/app/src', '/src', './src']
+    const dbPath = process.env.DATABASE_PATH
+    for (const bad of dangerousPaths) {
+      if (dbPath.startsWith(bad)) {
+        throw new Error(
+          `DATABASE_PATH (${dbPath}) points to a temporary or source directory. ` +
+          `Use a persistent volume path like /app/data/`
+        )
+      }
     }
   }
 
@@ -72,6 +74,7 @@ export const config = {
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
   ACCESS_TOKEN_EXPIRES_IN: process.env.ACCESS_TOKEN_EXPIRES_IN || '15m',
   REFRESH_TOKEN_EXPIRES_IN: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
+  DATABASE_URL: process.env.DATABASE_URL || null,
   DATABASE_PATH: process.env.DATABASE_PATH || './data/aipilot.db',
   APP_URL: process.env.APP_URL || 'https://pilotsite.ru',
   SMTP_HOST: process.env.SMTP_HOST,

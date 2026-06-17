@@ -128,7 +128,7 @@ export default async function sitesRoutes(app) {
 
     const ip = request.ip
     if (!checkConnectCodeRateLimit(ip)) {
-      createAuditEvent({
+      await createAuditEvent({
         userId: request.user.sub, eventType: 'connect_code_rate_limited',
         payload: { reason: 'ip_rate_limit', ip }, ipAddress: ip,
         requestId: request.requestId, status: '429'
@@ -141,7 +141,7 @@ export default async function sitesRoutes(app) {
       return reply.status(400).send({ error: 'invalid_url', message: urlError })
     }
 
-    let existingSite = findSiteByUserAndUrl(request.user.sub, cleanUrl)
+    let existingSite = await findSiteByUserAndUrl(request.user.sub, cleanUrl)
 
     try {
       const verifyUrl = `${cleanUrl}/wp-json/aipilot/v1/agent/verify-code?code=${encodeURIComponent(code)}`
@@ -151,7 +151,7 @@ export default async function sitesRoutes(app) {
         const body = await resp.text().catch(() => '')
         const isPluginMissing = body.includes('rest_no_route') || body.includes('not_found')
 
-        createAuditEvent({
+        await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: isPluginMissing ? 'wp_plugin_not_found' : 'code_invalid', siteUrl: cleanUrl },
           ipAddress: ip, requestId: request.requestId, status: String(resp.status)
@@ -166,7 +166,7 @@ export default async function sitesRoutes(app) {
       }
 
       if (!resp.ok) {
-        createAuditEvent({
+        await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: 'site_unreachable', siteUrl: cleanUrl, status: resp.status },
           ipAddress: ip, requestId: request.requestId, status: String(resp.status)
@@ -177,7 +177,7 @@ export default async function sitesRoutes(app) {
 
       const data = await resp.json()
       if (!data.verified) {
-        createAuditEvent({
+        await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: 'code_invalid_response', siteUrl: cleanUrl },
           ipAddress: ip, requestId: request.requestId, status: '422'
@@ -190,14 +190,14 @@ export default async function sitesRoutes(app) {
       const apiToken = data.token || ''
 
       if (existingSite) {
-        updateSiteToken(existingSite.id, apiToken)
+        await updateSiteToken(existingSite.id, apiToken)
         if (apiToken) {
           notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
         }
         return reply.send({ id: existingSite.id, url: cleanUrl, name: siteName, verified: !!apiToken })
       }
 
-      const site = createSite({
+      const site = await createSite({
         userId: request.user.sub, url: cleanUrl, name: siteName, apiToken,
         wpVersion: null, verified: apiToken ? 1 : 0
       })
@@ -206,7 +206,7 @@ export default async function sitesRoutes(app) {
         notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
       }
 
-      createAuditEvent({
+      await createAuditEvent({
         userId: request.user.sub, siteId: site.id, eventType: 'site_connected',
         payload: { method: 'connect_code', siteUrl: cleanUrl },
         ipAddress: ip, requestId: request.requestId, status: '201'
@@ -214,7 +214,7 @@ export default async function sitesRoutes(app) {
 
       return reply.status(201).send({ id: site.id, url: cleanUrl, name: siteName, verified: !!apiToken })
     } catch (e) {
-      createAuditEvent({
+      await createAuditEvent({
         userId: request.user.sub, eventType: 'connect_code_error',
         payload: { reason: 'network_error', siteUrl: cleanUrl, error: e.message },
         ipAddress: ip, requestId: request.requestId, status: '502'
@@ -234,7 +234,7 @@ export default async function sitesRoutes(app) {
     const { url: cleanUrl, error: urlError } = normalizeSiteUrl(url)
     if (urlError) return reply.status(400).send({ error: 'invalid_url', message: urlError })
 
-    if (findSiteByUserAndUrl(request.user.sub, cleanUrl)) {
+    if (await findSiteByUserAndUrl(request.user.sub, cleanUrl)) {
       return reply.status(409).send({ error: 'Сайт уже привязан к вашему аккаунту' })
     }
 
@@ -253,7 +253,7 @@ export default async function sitesRoutes(app) {
       console.error('Site verification failed:', err.message)
     }
 
-    const site = createSite({
+    const site = await createSite({
       userId: request.user.sub, url: cleanUrl, name: siteName, apiToken,
       wpVersion, verified: wpVersion ? 1 : 0
     })
@@ -272,7 +272,7 @@ export default async function sitesRoutes(app) {
     let siteList
     if (isAdmin(request)) {
       const seen = new Set()
-      siteList = allSites().filter(s => {
+      siteList = (await allSites()).filter(s => {
         if (seen.has(s.url)) return false
         seen.add(s.url)
         return true
@@ -280,7 +280,7 @@ export default async function sitesRoutes(app) {
         id: s.id, url: s.url, name: s.name, wp_version: s.wp_version, verified: s.verified, created_at: s.created_at
       }))
     } else {
-      siteList = findSitesByUser(request.user.sub).map(s => ({
+      siteList = (await findSitesByUser(request.user.sub)).map(s => ({
         id: s.id, url: s.url, name: s.name, wp_version: s.wp_version, verified: s.verified, created_at: s.created_at
       }))
     }
@@ -291,7 +291,7 @@ export default async function sitesRoutes(app) {
   // Информация о сайте
   // ==========================================================
   app.get('/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site || site.user_id !== request.user.sub) return reply.status(404).send({ error: 'Site not found' })
     return reply.send({ site })
   })
@@ -308,7 +308,7 @@ export default async function sitesRoutes(app) {
 
     let token = apiToken
     if (!token || token === 'pending') {
-      const site = findSiteByUserAndUrl(request.user.sub, cleanUrl)
+      const site = await findSiteByUserAndUrl(request.user.sub, cleanUrl)
       if (site && site.api_token && site.api_token !== 'pending') {
         token = site.api_token
       }
@@ -333,9 +333,9 @@ export default async function sitesRoutes(app) {
       const data = await resp.json()
 
       if (apiToken && apiToken !== 'pending') {
-        const found = findSiteByUserAndUrl(request.user.sub, cleanUrl)
+        const found = await findSiteByUserAndUrl(request.user.sub, cleanUrl)
         if (found && (!found.api_token || found.api_token === 'pending')) {
-          updateSiteToken(found.id, apiToken)
+          await updateSiteToken(found.id, apiToken)
           notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
         }
       }
@@ -350,7 +350,7 @@ export default async function sitesRoutes(app) {
   // История обращений (с сайта через WP REST API)
   // ==========================================================
   app.get('/:id/memory', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site) return reply.status(404).send({ error: 'Site not found' })
     if (!isAdmin(request) && site.user_id !== request.user.sub) {
       return reply.status(403).send({ error: 'Access denied' })
@@ -378,7 +378,7 @@ export default async function sitesRoutes(app) {
   // Запись в локальную память сайта
   // ==========================================================
   app.post('/:id/memory', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site) return reply.status(404).send({ error: 'Site not found' })
     if (!isAdmin(request) && site.user_id !== request.user.sub) {
       return reply.status(403).send({ error: 'Access denied' })
@@ -389,20 +389,20 @@ export default async function sitesRoutes(app) {
       return reply.status(400).send({ error: 'key и value обязательны' })
     }
 
-    const result = setSiteMemory(site.id, key, String(value).slice(0, 2000), source || 'client')
-    return reply.send({ status: 'saved', key, value: result.value, source: result.source })
+    const result = await setSiteMemory(site.id, key, String(value).slice(0, 2000), source || 'client')
+    return reply.send({ status: 'saved', key, source: source || 'client' })
   })
 
   // ==========================================================
   // Чтение локальной памяти сайта
   // ==========================================================
   app.get('/:id/memory-local', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site) return reply.status(404).send({ error: 'Site not found' })
     if (!isAdmin(request) && site.user_id !== request.user.sub) {
       return reply.status(403).send({ error: 'Access denied' })
     }
-    const memory = getSiteMemory(site.id)
+    const memory = await getSiteMemory(site.id)
     return reply.send({ memory })
   })
 
@@ -412,12 +412,12 @@ export default async function sitesRoutes(app) {
   app.patch('/:id/token', { preHandler: [authMiddleware] }, async (request, reply) => {
     const { apiToken } = request.body || {}
     if (!apiToken) return reply.status(400).send({ error: 'apiToken обязателен' })
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site) return reply.status(404).send({ error: 'Site not found' })
     if (!isAdmin(request) && site.user_id !== request.user.sub) {
       return reply.status(403).send({ error: 'Access denied' })
     }
-    updateSiteToken(request.params.id, apiToken)
+    await updateSiteToken(request.params.id, apiToken)
     return reply.send({ message: 'Токен обновлён', apiToken })
   })
 
@@ -425,9 +425,9 @@ export default async function sitesRoutes(app) {
   // Удалить сайт
   // ==========================================================
   app.delete('/:id', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const site = findSiteById(request.params.id)
+    const site = await findSiteById(request.params.id)
     if (!site || site.user_id !== request.user.sub) return reply.status(404).send({ error: 'Site not found' })
-    deleteSite(request.params.id)
+    await deleteSite(request.params.id)
     return reply.send({ message: 'Сайт удалён' })
   })
 }

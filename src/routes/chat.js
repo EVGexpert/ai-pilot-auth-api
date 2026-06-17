@@ -27,9 +27,9 @@ registerJobHandler('refresh_context', async (job) => {
   clearTimeout(timeout)
   if (ctxRes.ok) {
     const ctx = await ctxRes.json()
-    const site = findSiteByUserAndUrl(job.user_id, siteUrl)
+    const site = await findSiteByUserAndUrl(job.user_id, siteUrl)
     if (site) {
-      updateSiteCache(site.id, {
+      await updateSiteCache(site.id, {
         cached_structure: JSON.stringify(ctx.structure || ctx),
         cached_soul: JSON.stringify(ctx.soul || {}),
         cached_at: new Date().toISOString()
@@ -173,7 +173,7 @@ export default async function chatRoutes(app) {
     }
 
     // Проверяем, что сайт принадлежит пользователю
-    const site = findSiteByUserAndUrl(request.user.sub, siteUrl)
+    const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
     if (!site) {
       return reply.status(403).send({ error: 'Сайт не привязан к вашему аккаунту' })
     }
@@ -188,14 +188,14 @@ export default async function chatRoutes(app) {
     // Создаём или используем указанную сессию
     let session
     if (sessionId) {
-      const existingSession = findSessionById(sessionId)
+      const existingSession = await findSessionById(sessionId)
       if (existingSession && existingSession.user_id === request.user.sub && existingSession.site_id === site.id) {
         session = existingSession
       } else {
-        session = createChatSession({ userId: request.user.sub, siteId: site.id, title: 'Чат' })
+        session = await createChatSession({ userId: request.user.sub, siteId: site.id, title: 'Чат' })
       }
     } else {
-      session = findOrCreateSession(request.user.sub, site.id)
+      session = await findOrCreateSession(request.user.sub, site.id)
     }
 
     // Контекст сайта — из кэша (без ожидания WP)
@@ -212,7 +212,7 @@ export default async function chatRoutes(app) {
 
     // Фоновое обновление кэша — через очередь
     if (!contextSummary) {
-      createJob({
+      await createJob({
         type: 'refresh_context',
         siteId: site.id,
         userId: request.user.sub,
@@ -222,7 +222,7 @@ export default async function chatRoutes(app) {
     }
 
     // Добавляем память сайта в контекст
-    const siteMemoryBlock = formatSiteMemory(site.id)
+    const siteMemoryBlock = await formatSiteMemory(site.id)
     const memoryContext = siteMemoryBlock ? `
 
 Память о предыдущих решениях:
@@ -232,7 +232,7 @@ ${siteMemoryBlock}` : ''
     const systemPrompt = buildSystemPrompt(site, siteUrl, message, contextSummary + memoryContext)
 
     // Сохраняем сообщение пользователя со статусом 'pending'
-    const userMsg = createMessage({
+    const userMsg = await createMessage({
       sessionId: session.id,
       role: 'user',
       content: message,
@@ -244,7 +244,7 @@ ${siteMemoryBlock}` : ''
     const agentId = getAgentId(siteUrl)
     const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:18789'
     // Gateway token: сначала из БД, потом из env
-    let gatewayToken = getConfigValue('gateway_token')
+    let gatewayToken = await getConfigValue('gateway_token')
     if (!gatewayToken) {
       gatewayToken = process.env.GATEWAY_TOKEN || process.env.VITE_GATEWAY_TOKEN || ''
     }
@@ -257,7 +257,7 @@ ${siteMemoryBlock}` : ''
       const prefixedMessage = `[client:${siteUrl}] ${message}`
       
       // Загружаем историю сессии (последние 12 сообщений)
-      const historyMessages = getMessagesBySession(session.id)
+      const historyMessages = (await getMessagesBySession(session.id))
         .slice(-12)
         .map(m => ({ role: m.role, content: m.content }))
       
@@ -287,7 +287,7 @@ ${siteMemoryBlock}` : ''
 
       if (!resp.ok) {
         const text = await resp.text()
-        updateMessageStatus(userMsg.id, 'failed')
+        await updateMessageStatus(userMsg.id, 'failed')
         return reply.status(resp.status).send({
           error: 'Gateway request failed',
           detail: text.slice(0, 500)
@@ -303,10 +303,10 @@ ${siteMemoryBlock}` : ''
       const displayContent = parsed?.cleanContent || rawContent
 
       // Обновляем статус сообщения пользователя
-      updateMessageStatus(userMsg.id, 'sent')
+      await updateMessageStatus(userMsg.id, 'sent')
 
       // Сохраняем ответ ассистента
-      const assistantMsg = createMessage({
+      const assistantMsg = await createMessage({
         sessionId: session.id,
         role: 'assistant',
         content: displayContent,
@@ -317,7 +317,7 @@ ${siteMemoryBlock}` : ''
 
       // Пишем в память WordPress через очередь
       if (message.trim() !== '/start') {
-        createJob({
+        await createJob({
           type: 'sync_wp_memory',
           siteId: site.id,
           userId: request.user.sub,
@@ -331,10 +331,10 @@ ${siteMemoryBlock}` : ''
       }
 
       // Авто-обновление session summary (при длинных диалогах)
-      updateSessionSummary(session.id)
+      await updateSessionSummary(session.id)
 
       // Audit log для отправленного сообщения
-      createAuditEvent({
+      await createAuditEvent({
         userId: request.user.sub, siteId: site.id, sessionId: session.id,
         eventType: 'chat_message', entityType: 'message', entityId: assistantMsg.id,
         payload: { role: 'assistant', hasActions: !!actions },
@@ -350,7 +350,7 @@ ${siteMemoryBlock}` : ''
         messageId: userMsg.id
       })
     } catch (e) {
-      if (userMsg) updateMessageStatus(userMsg.id, 'failed')
+      if (userMsg) await updateMessageStatus(userMsg.id, 'failed')
       return reply.status(502).send({ error: `Chat proxy failed: ${e.message}` })
     }
   })
@@ -363,23 +363,24 @@ ${siteMemoryBlock}` : ''
     const { siteUrl } = request.query
     if (!siteUrl) return reply.status(400).send({ error: 'siteUrl обязателен' })
 
-    const site = findSiteByUserAndUrl(request.user.sub, siteUrl)
+    const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
 
-    const sessions = findSessionsByUserAndSite(request.user.sub, site.id)
-    const result = sessions.map(s => {
-      const msgs = getMessagesBySession(s.id)
+    const sessions = await findSessionsByUserAndSite(request.user.sub, site.id)
+    const result = []
+    for (const s of sessions) {
+      const msgs = await getMessagesBySession(s.id)
       const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null
       const userMsgs = msgs.filter(m => m.role === 'user')
-      return {
+      result.push({
         id: s.id,
         title: s.title || 'Чат',
         preview: lastMsg ? lastMsg.content.slice(0, 60) : '',
         date: s.created_at.slice(0, 10),
         messageCount: msgs.length,
         lastMessage: lastMsg ? { role: lastMsg.role, created_at: lastMsg.created_at } : null
-      }
-    })
+      })
+    }
     return reply.send({ sessions: result })
   })
 
@@ -391,10 +392,10 @@ ${siteMemoryBlock}` : ''
     const { siteUrl } = request.body || {}
     if (!siteUrl) return reply.status(400).send({ error: 'siteUrl обязателен' })
 
-    const site = findSiteByUserAndUrl(request.user.sub, siteUrl)
+    const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
 
-    const session = createChatSession({ userId: request.user.sub, siteId: site.id, title: 'Чат' })
+    const session = await createChatSession({ userId: request.user.sub, siteId: site.id, title: 'Чат' })
     return reply.send({ sessionId: session.id })
   })
 
@@ -412,19 +413,19 @@ ${siteMemoryBlock}` : ''
     let sid = sessionId
     if (sid) {
       // Если передан sessionId — проверяем, что сессия принадлежит пользователю
-      const session = findSessionById(sid)
+      const session = await findSessionById(sid)
       if (!session || session.user_id !== request.user.sub) {
         return reply.status(403).send({ error: 'Session not found or access denied' })
       }
     } else {
-      const site = findSiteByUserAndUrl(request.user.sub, siteUrl)
+      const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
       if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
-      const sessions = findSessionsByUserAndSite(request.user.sub, site.id)
+      const sessions = await findSessionsByUserAndSite(request.user.sub, site.id)
       if (sessions.length === 0) return reply.send({ messages: [], sessionId: null })
       sid = sessions[0].id
     }
 
-    const messages = getMessagesBySession(sid)
+    const messages = await getMessagesBySession(sid)
     return reply.send({ messages, sessionId: sid })
   })
 
@@ -500,7 +501,7 @@ ${siteMemoryBlock}` : ''
     const idempotencyKey = generateActionKey(action)
 
     // Проверяем, не выполнялось ли уже такое действие
-    const existing = findActionByKey(idempotencyKey)
+    const existing = await findActionByKey(idempotencyKey)
     if (existing && existing.status === 'completed' && existing.result_json) {
       return reply.send({
         status: 'approved',
@@ -514,18 +515,18 @@ ${siteMemoryBlock}` : ''
     // Определяем сайт
     let wpUrl = siteUrl
     if (!wpUrl && sessionId) {
-      const session = findSessionById(sessionId)
+      const session = await findSessionById(sessionId)
       if (session) {
-        const site = findSiteById(session.site_id)
+        const site = await findSiteById(session.site_id)
         if (site) wpUrl = site.url
       }
     }
 
-    const site = findSiteByUserAndUrl(request.user.sub, wpUrl)
+    const site = await findSiteByUserAndUrl(request.user.sub, wpUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
 
     // Создаём запись с idempotency key
-    const actionReq = existing || createActionRequest({
+    const actionReq = existing || await createActionRequest({
       userId: request.user.sub, siteId: site.id, sessionId, action
     })
 
@@ -534,7 +535,7 @@ ${siteMemoryBlock}` : ''
     }
 
     // Ставим статус processing сразу — блокируем дубли
-    updateActionStatus(actionReq.id, 'processing')
+    await updateActionStatus(actionReq.id, 'processing')
 
     let execResult = null
     let execError = null
@@ -545,14 +546,14 @@ ${siteMemoryBlock}` : ''
       execError = e.message
     }
 
-    createAuditEvent({
+    await createAuditEvent({
       userId: request.user.sub, siteId: site.id, sessionId,
       eventType: 'action_approved', entityType: 'action', entityId: actionId,
       payload: { actionId, action, execResult, execError, idempotencyKey },
       status: execError ? 'failed' : 'completed'
     })
 
-    updateActionStatus(actionReq.id, execError ? 'failed' : 'completed', { proposalId: execResult?.proposalId, result: execResult })
+    await updateActionStatus(actionReq.id, execError ? 'failed' : 'completed', { proposalId: execResult?.proposalId, result: execResult })
 
     if (execError) {
       return reply.status(502).send({ status: 'failed', error: execError, actionId })
@@ -568,7 +569,7 @@ ${siteMemoryBlock}` : ''
     const { actionId, sessionId } = request.body || {}
     if (!actionId) return reply.status(400).send({ error: 'actionId обязателен' })
 
-    createAuditEvent({
+    await createAuditEvent({
       userId: request.user.sub, siteId: null, sessionId,
       eventType: 'action_rejected', entityType: 'action', entityId: actionId,
       payload: { actionId },

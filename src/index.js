@@ -6,9 +6,8 @@ import sitesRoutes from './routes/sites.js'
 import chatRoutes from './routes/chat.js'
 import { config } from './config.js'
 import { getStats, getDbHealth } from './db.js'
-import { queryOne } from './db/connection.js'
+import { queryOne, close as closeDb, ping, DB_MODE } from './db/connection.js'
 import { authMiddleware, adminOnly } from './middleware/auth.js'
-import { close as closeDb } from './db/connection.js'
 
 
 const app = Fastify({ logger: true, genReqId: () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8) })
@@ -38,22 +37,27 @@ app.get('/api/health', async () => {
   const checks = {
     database: false,
     disk: false,
-    memory: false
+    memory: false,
+    dbMode: DB_MODE
   }
 
   try {
-    // ✅ Проверка БД
-    queryOne('SELECT 1')
+    // ✅ Проверка БД (works for both SQLite and PG)
+    await ping()
     checks.database = true
   } catch (e) {
     console.error('[Health] DB check failed:', e.message)
   }
 
   try {
-    // ✅ Проверка диска
-    const { statfsSync } = await import('fs')
-    const stats = statfsSync('/app/data')
-    checks.disk = stats.bavail / stats.blocks > 0.1  // > 10% свободно
+    // ✅ Проверка диска (only for SQLite mode)
+    if (DB_MODE === 'sqlite') {
+      const { statfsSync } = await import('fs')
+      const stats = statfsSync('/app/data')
+      checks.disk = stats.bavail / stats.blocks > 0.1  // > 10% свободно
+    } else {
+      checks.disk = true  // PG mode — no local disk check needed
+    }
   } catch (e) {
     console.error('[Health] Disk check failed:', e.message)
   }
@@ -83,7 +87,7 @@ app.get('/api/health/db', async (request, reply) => {
     return reply.status(503).send({ error: 'DEPLOY_HEALTH_TOKEN not configured' })
   }
   try {
-    return reply.send(getDbHealth())
+    return reply.send(await getDbHealth())
   } catch (e) {
     return reply.status(500).send({ error: e.message })
   }
@@ -92,14 +96,17 @@ app.get('/api/health/db', async (request, reply) => {
 // Stats — только admin
 app.get('/api/stats', { preHandler: [authMiddleware, adminOnly] }, async (request, reply) => {
   try {
-    return reply.send({ status: 'ok', ...getStats() })
+    return reply.send({ status: 'ok', ...(await getStats()) })
   } catch (e) {
     return reply.status(500).send({ error: e.message })
   }
 })
 
-// Backup — только admin
+// Backup — только admin (SQLite mode only)
 app.post('/api/backup', { preHandler: [authMiddleware, adminOnly] }, async (request, reply) => {
+  if (DB_MODE === 'postgresql') {
+    return reply.status(400).send({ error: 'Backup not supported in PostgreSQL mode. Use pg_dump.' })
+  }
   try {
     const { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } = await import('fs')
     const path = await import('path')
@@ -132,6 +139,7 @@ app.get('/api/metrics', { preHandler: [authMiddleware, adminOnly] }, async () =>
       usagePercent
     },
     uptime: process.uptime(),
+    dbMode: DB_MODE,
     timestamp: new Date().toISOString()
   }
 })
@@ -186,8 +194,8 @@ async function gracefulShutdown(signal) {
   }
 
   try {
-    // 2. Save & close DB
-    closeDb()
+    // 2. Close DB
+    await closeDb()
     console.log('[Shutdown] DB closed')
   } catch (err) {
     console.error('[Shutdown] Error closing DB:', err.message)
@@ -206,7 +214,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 const start = async () => {
   try {
     await app.listen({ port: config.PORT, host: '0.0.0.0' })
-    console.log(`Auth API v0.4.0 running on port ${config.PORT}`)
+    console.log(`Auth API v0.4.0 running on port ${config.PORT} (${DB_MODE} mode)`)
   } catch (err) {
     app.log.error(err)
     process.exit(1)
