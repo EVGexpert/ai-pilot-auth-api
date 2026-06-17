@@ -1,12 +1,17 @@
 import jwt from 'jsonwebtoken'
+import { nanoid } from 'nanoid'
 import { config } from '../config.js'
 
-export function generateToken(user) {
+export function generateToken(user, sitePermissions = []) {
   return jwt.sign(
     {
       sub: user.id,
       email: user.email,
-      role: user.role || 'client'
+      role: user.role || 'client',
+      permissions: sitePermissions,
+      site_id: user.site_id || null,
+      // ✅ jti — уникальный ID токена для возможности отзыва
+      jti: nanoid()
     },
     config.JWT_SECRET,
     { expiresIn: config.JWT_EXPIRES_IN }
