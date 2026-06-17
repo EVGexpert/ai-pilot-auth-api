@@ -17,7 +17,7 @@ export default async function authRoutes(app) {
   app.post('/register', {
     config: {
       rateLimit: {
-        max: 3,
+        max: 30,
         timeWindow: '1 hour'
       }
     }
