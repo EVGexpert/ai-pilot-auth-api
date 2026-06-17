@@ -15,7 +15,11 @@ if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 // Open database (node:sqlite — writes directly to disk, no manual save)
 // ============================================================
 const db = new DatabaseSync(DB_PATH)
-db.exec('PRAGMA journal_mode = WAL')
+// ⚠️ Только DELETE journal mode!
+// WAL mode вызывает потерю данных при деплое — deploy.yml копирует только .db,
+// а данные в .wal файлах теряются. DELETE гарантирует, что все изменения
+// сразу пишутся в основной .db файл.
+db.exec('PRAGMA journal_mode = DELETE')
 db.exec('PRAGMA foreign_keys = ON')
 
 // ============================================================
