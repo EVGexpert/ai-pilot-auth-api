@@ -24,5 +24,8 @@ EXPOSE 3001
 #   docker run -v /host/path:/app/data ...
 VOLUME ["/app/data"]
 
+# Обеспечиваем права на запись в volume БД
+RUN mkdir -p /app/data
+
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "--experimental-sqlite", "src/index.js"]
+CMD ["sh", "-c", "chmod 777 /app/data && exec node --experimental-sqlite src/index.js"]
