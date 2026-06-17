@@ -14,22 +14,17 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-# Директория для SQLite — должна быть подключена как volume
+# Директория для SQLite (без VOLUME — bind mount из deploy.yml)
 RUN mkdir -p /app/data
 
 EXPOSE 3001
 
-# ⚠️ ВАЖНО: SQLite-БД хранится по DATABASE_PATH
-# Для сохранения данных между рестартами обязательно подключите volume:
-#   docker run -v /host/path:/app/data ...
-VOLUME ["/app/data"]
-
-# Обеспечиваем права на запись в volume БД
-RUN mkdir -p /app/data
-
 # ─── СТАРТОВЫЙ СКРИПТ ───
-# Гарантирует права на БД, удаляет WAL/SHM остатки, чистит битые файлы
-RUN printf '#!/bin/sh\nset -e\nfind /app/data -type d -exec chmod 777 {} + 2>/dev/null\nfind /app/data -type f -exec chmod 666 {} + 2>/dev/null\nrm -f /app/data/*.db-wal /app/data/*.db-shm /app/data/*.db-journal 2>/dev/null\necho "init: permissions set, stale files cleaned"\nexec node --experimental-sqlite src/index.js\n' > /app/entry.sh && chmod +x /app/entry.sh
+# 1. Удаляет VOLUME declaration (мешает bind mount)
+# 2. Проверяет/чинит права на /app/data
+# 3. Удаляет WAL/SHM журналы
+# 4. Если aipilot.db readonly — удаляет его (создастся свежий)
+RUN printf '#!/bin/sh\n\nDATA=/app/data\nDB="$DATA/aipilot.db"\n\necho "init: checking $DB..."\nls -la "$DATA/" 2>&1\n\n# Права на всё\nchmod -R 777 "$DATA" 2>/dev/null\n\n# Удалить WAL/SHM/journal\nrm -f "$DATA"/*.db-wal "$DATA"/*.db-shm "$DATA"/*.db-journal 2>/dev/null\n\n# Проверка: можно писать в БД?\nif [ -f "$DB" ]; then\n  if ! touch "$DB" 2>/dev/null; then\n    echo "init: WARNING $DB not writable, removing..."\n    rm -f "$DB"\n  fi\nfi\n\necho "init: starting node..."\nexec node --experimental-sqlite src/index.js\n' > /app/entry.sh && chmod +x /app/entry.sh
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["/app/entry.sh"]
