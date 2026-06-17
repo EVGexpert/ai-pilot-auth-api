@@ -492,3 +492,64 @@ curl -H "Authorization: Bearer $(openclaw token)" http://localhost:3001/api/stat
 ---
 
 *Сгенерировано Zero 🎯 | 2026-06-16 21:48 UTC*
+
+---
+
+## 13. СТАТУС ВЫПОЛНЕНИЯ ПРОМПТОВ АРХИТЕКТОРА (2026-06-17)
+
+В рамках аудита AI-архитектора (Арчи 🏗️) был составлен план из 9 промптов для трансформации системы из прототипа в production-ready платформу.
+
+### Статус на 2026-06-17 09:30 UTC
+
+| # | Промпт | Приоритет | Статус | Коммит |
+|---|--------|-----------|--------|--------|
+| 1 | SQLite → PostgreSQL | 🔴 Крит | ❌ Отложено | — |
+| 2 | Worker scaling | 🔴 Крит | ❌ Отложено (зависит от #1) | — |
+| 3 | Git leak secrets | 🔴 Крит | ✅ **Выполнено** | `5b17808` (web-chat), `1594e69` (auth-api) |
+| 4 | Plugin JWT validation | 🔴 Крит | ✅ **Выполнено** | `54cab94` (wp-plugin) |
+| 5 | Caddy healthcheck | 🟠 Выс | 🟡 **Частично** (health endpoint работает, Caddyfile — вручную) | — |
+| 6 | WebSocket reconnect | 🟠 Выс | ✅ **Выполнено** | `c9edfde` (web-chat) |
+| 7 | Graceful shutdown | 🟠 Выс | ✅ **Выполнено** | `954abf1` (auth-api) |
+| 8 | Log aggregation | 🟡 Сред | ❌ Отложено | — |
+| 9 | Multi-instance sync | 🟡 Сред | ❌ Отложено (зависит от #1) | — |
+
+### Что сделано
+
+#### PROMPT_03 — 🛡️ Секреты
+- Убран хардкод `JWT_SECRET` и `GATEWAY_TOKEN` из `web-chat/.github/workflows/deploy.yml`
+- Найден и исправлен дополнительный хардкод токена в `sites.js` (оба репозитория)
+- Secrets вынесены в GitHub Secrets
+
+#### PROMPT_04 — ✅ Plugin JWT Validation
+- Полная JWT-валидация на стороне WordPress Plugin (нативная PHP, HS256)
+- Проверка exp, iat, jti blacklist через transient
+- Revoke endpoint `/auth/revoke`
+- Логирование auth failures с IP и причиной
+- 11/11 чек-лист пройден
+
+#### PROMPT_06 — 🔌 WebSocket Reconnect
+- Exponential backoff (1s, 2s, 4s… до 30s, 10 попыток)
+- Message queue (сообщения не теряются при обрыве)
+- Ack mechanism (timeout 10s → возврат в очередь)
+- Event emitter паттерн
+- Vue composable `useGatewayClient.js`
+- Индикатор статуса подключения в ChatWindow.vue
+
+#### PROMPT_07 — 💀 Graceful Shutdown
+- SIGTERM/SIGINT → graceful shutdown: HTTP drain → DB save → exit(0)
+- 30s force-exit timeout
+- Memory monitor (каждые 30s, warning 80%, shutdown 95%)
+- Dockerfile: `dumb-init` + `NODE_OPTIONS="--max-old-space-size=384 --expose-gc"`
+- `/api/metrics` endpoint (admin only)
+
+### Что ещё предстоит
+
+| Промпт | Блокировка | План |
+|--------|-----------|------|
+| **#1 — PostgreSQL** | Нет | Фундамент для #2, #7, #9. Миграция sql.js → `node:sqlite` или PostgreSQL |
+| **#5 — Caddyfile** | Нужен SSH | Добавить health checks в конфиг Caddy на сервере |
+| **#2 — Worker** | #1 | Вынести worker в отдельный процесс Bull/Redis |
+| **#8 — Logging** | #1, #2 | Единый trace ID через все сервисы |
+| **#9 — Multi-instance** | #1, #2 | Shared PostgreSQL + Redis для сессий |
+
+> **Zero 🎯:** Промпты архитектора выполняются последовательно. Сделанные фиксы уже повысили безопасность, надёжность и отказоустойчивость системы.
