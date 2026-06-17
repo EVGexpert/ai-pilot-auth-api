@@ -86,7 +86,8 @@ export const config = {
   SMTP_PASS: process.env.SMTP_PASS,
   GATEWAY_TOKEN: process.env.GATEWAY_TOKEN,
   DEPLOY_HEALTH_TOKEN: process.env.DEPLOY_HEALTH_TOKEN,
-  GATEWAY_WS: process.env.GATEWAY_WS || 'ws://localhost:18789'
+  GATEWAY_WS: process.env.GATEWAY_WS || 'ws://localhost:18789',
+  REDIS_URL: process.env.REDIS_URL || null
 }
 
 // Безопасная диагностика при старте

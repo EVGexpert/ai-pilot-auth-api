@@ -65,25 +65,6 @@ function normalizeSiteUrl(rawUrl) {
   }
 }
 
-/**
- * Per-IP rate limit для connect-code.
- */
-const ipRateLimit = new Map()
-const CONNECT_CODE_MAX = 5
-const CONNECT_CODE_WINDOW = 60000
-
-function checkConnectCodeRateLimit(ip) {
-  if (!ip) return true
-  const now = Date.now()
-  const entry = ipRateLimit.get(ip)
-  if (!entry || now - entry.resetAt > CONNECT_CODE_WINDOW) {
-    ipRateLimit.set(ip, { count: 1, resetAt: now + CONNECT_CODE_WINDOW })
-    return true
-  }
-  entry.count++
-  return entry.count <= CONNECT_CODE_MAX
-}
-
 async function notifyGateway(url, apiToken, userId) {
   const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:18789'
   const envToken = process.env.GATEWAY_TOKEN || process.env.VITE_GATEWAY_TOKEN || ''
@@ -123,21 +104,21 @@ export default async function sitesRoutes(app) {
   // ==========================================================
   // Подключить сайт через одноразовый code
   // ==========================================================
-  app.post('/connect-code', { preHandler: [authMiddleware] }, async (request, reply) => {
+  app.post('/connect-code', {
+    preHandler: [authMiddleware],
+    config: {
+      rateLimit: {
+        max: 5,
+        timeWindow: '1 minute'
+      }
+    }
+  }, async (request, reply) => {
     const { code, siteUrl } = request.body || {}
     if (!code || !siteUrl) {
       return reply.status(400).send({ error: 'code_required', message: 'Code and siteUrl required' })
     }
 
     const ip = request.ip
-    if (!checkConnectCodeRateLimit(ip)) {
-      await createAuditEvent({
-        userId: request.user.sub, eventType: 'connect_code_rate_limited',
-        payload: { reason: 'ip_rate_limit', ip }, ipAddress: ip,
-        requestId: request.requestId, traceId: request.traceId, status: '429'
-      })
-      return reply.status(429).send({ error: 'too_many_attempts', message: 'Слишком много попыток. Попробуйте через минуту.' })
-    }
 
     const { url: cleanUrl, error: urlError } = normalizeSiteUrl(siteUrl)
     if (urlError) {

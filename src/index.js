@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { hostname } from 'os'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
@@ -14,6 +15,31 @@ import { createLogger } from './utils/logger.js'
 
 const log = createLogger('auth-api')
 
+// ── Instance identity (stable across requests, unique per process) ──
+const INSTANCE_ID = process.env.INSTANCE_ID || hostname() || randomUUID()
+const START_TIME = Date.now()
+
+// ── Distributed rate limiting: Redis (PG mode) or in-memory fallback ──
+let redisClient = null
+if (DB_MODE === 'postgresql' && config.REDIS_URL) {
+  try {
+    const { default: Redis } = await import('ioredis')
+    redisClient = new Redis(config.REDIS_URL, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+      retryStrategy: (times) => Math.min(times * 200, 5000),
+      lazyConnect: true
+    })
+    await redisClient.connect()
+    const safeUrl = config.REDIS_URL.replace(/\/\/.*@/, '//***@')
+    log.info({ event: 'redis_connected', url: safeUrl }, `Redis connected for distributed rate limiting (${safeUrl})`)
+  } catch (err) {
+    log.warn({ event: 'redis_connection_failed', err: err.message }, 'Redis connection failed — falling back to in-memory rate limiting')
+    try { await redisClient?.quit() } catch (_) { /* ignore */ }
+    redisClient = null
+  }
+}
+const RATE_LIMITER_MODE = redisClient ? 'redis' : 'memory'
 
 const app = Fastify({
   logger: false,
@@ -52,11 +78,17 @@ await app.register(cors, {
 })
 
 // Глобальный rate limit (защита от DDoS)
-await app.register(rateLimit, {
+// Redis = shared across instances (PG mode), in-memory = per-instance (SQLite mode)
+const rateLimitOptions = {
   global: true,
   max: 1000,
   timeWindow: '1 minute'
-})
+}
+if (redisClient) {
+  rateLimitOptions.redis = redisClient
+  rateLimitOptions.nameSpace = 'aipilot:rl:'
+}
+await app.register(rateLimit, rateLimitOptions)
 
 await app.register(authRoutes, { prefix: '/api/auth' })
 await app.register(sitesRoutes, { prefix: '/api/sites' })
@@ -68,7 +100,7 @@ app.get('/api/health', async () => {
     database: false,
     disk: false,
     memory: false,
-    dbMode: DB_MODE
+    redis: redisClient ? false : undefined
   }
 
   try {
@@ -96,11 +128,30 @@ app.get('/api/health', async () => {
   const memUsage = process.memoryUsage()
   checks.memory = memUsage.heapUsed / memUsage.heapTotal < 0.9  // < 90%
 
-  const healthy = checks.database && checks.disk && checks.memory
+  // ✅ Проверка Redis (if configured)
+  if (redisClient) {
+    try {
+      const result = await redisClient.ping()
+      checks.redis = result === 'PONG'
+    } catch (e) {
+      log.error({ event: 'health_redis_check_failed', err: e.message }, 'Redis check failed')
+    }
+  }
+
+  const allChecks = checks.database && checks.disk && checks.memory
+  const redisHealthy = !redisClient || checks.redis
+  const fullyHealthy = allChecks && redisHealthy
 
   return {
-    status: healthy ? 'ok' : 'degraded',
+    status: fullyHealthy ? 'ok' : 'degraded',
     version: '0.4.0',
+    instanceId: INSTANCE_ID,
+    uptime: Math.floor(process.uptime()),
+    cluster: {
+      dbMode: DB_MODE,
+      rateLimiter: RATE_LIMITER_MODE,
+      redis: redisClient ? (checks.redis ? 'connected' : 'disconnected') : 'not_configured'
+    },
     checks,
     timestamp: new Date().toISOString()
   }
@@ -160,6 +211,8 @@ app.get('/api/metrics', { preHandler: [authMiddleware, adminOnly] }, async () =>
   const mem = process.memoryUsage()
   const usagePercent = Math.round((mem.heapUsed / mem.heapTotal) * 10000) / 100
   return {
+    instanceId: INSTANCE_ID,
+    uptime: process.uptime(),
     memory: {
       rss: mem.rss,
       heapTotal: mem.heapTotal,
@@ -168,8 +221,11 @@ app.get('/api/metrics', { preHandler: [authMiddleware, adminOnly] }, async () =>
       arrayBuffers: mem.arrayBuffers,
       usagePercent
     },
-    uptime: process.uptime(),
-    dbMode: DB_MODE,
+    cluster: {
+      dbMode: DB_MODE,
+      rateLimiter: RATE_LIMITER_MODE,
+      redis: redisClient ? 'connected' : 'not_configured'
+    },
     timestamp: new Date().toISOString()
   }
 })
@@ -239,6 +295,16 @@ async function gracefulShutdown(signal) {
     log.error({ event: 'shutdown_db_error', err: err.message }, 'Error closing DB')
   }
 
+  // Close Redis (if connected)
+  if (redisClient) {
+    try {
+      await redisClient.quit()
+      log.info({ event: 'shutdown_redis_closed' }, 'Redis connection closed')
+    } catch (err) {
+      log.error({ event: 'shutdown_redis_error', err: err.message }, 'Error closing Redis')
+    }
+  }
+
   log.info({ event: 'shutdown_complete' }, 'Shutdown complete')
   process.exit(0)
 }
@@ -252,7 +318,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 const start = async () => {
   try {
     await app.listen({ port: config.PORT, host: '0.0.0.0' })
-    log.info({ event: 'server_start', port: config.PORT, dbMode: DB_MODE }, `Auth API v0.4.0 running on port ${config.PORT} (${DB_MODE} mode)`)
+    log.info({ event: 'server_start', port: config.PORT, dbMode: DB_MODE, rateLimiter: RATE_LIMITER_MODE, instanceId: INSTANCE_ID }, `Auth API v0.4.0 running on port ${config.PORT} (${DB_MODE} mode, rate-limiter: ${RATE_LIMITER_MODE}, instance: ${INSTANCE_ID})`)
 
     // Start background worker after server is up
     startWorker()
