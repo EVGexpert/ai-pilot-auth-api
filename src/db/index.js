@@ -28,7 +28,7 @@ export {
 
 export {
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
-  registerJobHandler
+  registerJobHandler, startWorker, stopWorker
 } from './jobs.js'
 
 export { createAuditEvent } from './audit.js'

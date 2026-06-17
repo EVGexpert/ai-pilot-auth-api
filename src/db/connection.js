@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, renameSync, readFileSync } from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { config } from '../config.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger('db')
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -70,11 +73,11 @@ if (USE_PG) {
   }
 
   // ──── PG SCHEMA INITIALIZATION ────
-  console.log('[DB] PostgreSQL mode — initializing schema...')
+  log.info({ event: 'pg_init_start' }, 'PostgreSQL mode — initializing schema...')
 
   const initSql = readFileSync(path.join(__dirname, 'migrations', '001_init.sql'), 'utf-8')
   await pool.query(initSql)
-  console.log('[DB] ✅ PostgreSQL schema initialized')
+  log.info({ event: 'pg_schema_ready' }, 'PostgreSQL schema initialized')
 
   // ──── PG MIGRATIONS (same version tracking as SQLite) ────
   let verRow = await _queryOne('SELECT MAX(version) as v FROM schema_version')
@@ -93,8 +96,8 @@ if (USE_PG) {
   }
   // Note: migrations 2-4, 6-10 are CREATE TABLE IF NOT EXISTS which are handled by 001_init.sql
 
-  console.log(`[DB] PostgreSQL migrations: v${ver}`)
-  console.log('[DB] ✅ PostgreSQL ready')
+  log.info({ event: 'pg_migrations', version: ver }, `PostgreSQL migrations: v${ver}`)
+  log.info({ event: 'pg_ready' }, 'PostgreSQL ready')
 
 } else {
   // ──────────────────────────────────────────────────────────
@@ -175,7 +178,7 @@ if (USE_PG) {
 
   const schemaTables = await _queryOne("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'")
   if (!schemaTables?.c || schemaTables.c < 2) {
-    console.warn('[DB] ⚠️  Схема не инициализирована: пустая БД.')
+    log.warn({ event: 'db_empty_schema' }, 'Схема не инициализирована: пустая БД.')
   }
 
   let verRow = await _queryOne('SELECT MAX(version) as v FROM schema_version')
@@ -277,27 +280,33 @@ if (USE_PG) {
     db.exec('CREATE INDEX IF NOT EXISTS idx_actions_site_status ON action_requests(site_id, status)')
     db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after)')
     await _run('INSERT INTO schema_version (version, applied_at) VALUES (10, ?)', [now()])
-    console.log('[DB] Migration v10: indexes added')
+    log.info({ event: 'migration_v10' }, 'Migration v10: indexes added')
     ver = 10
+  }
+  if (ver < 11) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_stale ON jobs(status, locked_at)')
+    await _run('INSERT INTO schema_version (version, applied_at) VALUES (11, ?)', [now()])
+    log.info({ event: 'migration_v11' }, 'Migration v11: stale jobs index added')
+    ver = 11
   }
 
   // ──── JSON MIGRATION (legacy) ────
   function recoverFromMigrated() {
     const migratedPath = JSON_PATH + '.migrated'
     if (!existsSync(migratedPath)) return false
-    console.log('[DB] Attempting recovery from migrated JSON...')
+    log.info({ event: 'json_recovery_start' }, 'Attempting recovery from migrated JSON...')
     try { return JSON.parse(readFileSync(migratedPath, 'utf-8')) }
-    catch (e) { console.warn('[DB] Failed to parse migrated JSON:', e.message); return false }
+    catch (e) { log.warn({ event: 'json_recovery_parse_error', err: e.message }, 'Failed to parse migrated JSON'); return false }
   }
 
   async function migrateFromJson() {
     if (!existsSync(JSON_PATH)) return false
     const count = await _queryOne('SELECT COUNT(*) as c FROM users')
     if (count?.c > 0) return false
-    console.log('[DB] Migrating from JSON to SQLite...')
+    log.info({ event: 'json_migration_start' }, 'Migrating from JSON to SQLite...')
     let jsonData
     try { jsonData = JSON.parse(readFileSync(JSON_PATH, 'utf-8')) }
-    catch (e) { console.warn('[DB] Failed to parse JSON:', e.message); return false }
+    catch (e) { log.warn({ event: 'json_parse_error', err: e.message }, 'Failed to parse JSON'); return false }
     try {
       for (const u of (jsonData.users || []))
         await _run('INSERT INTO users (id, email, password_hash, name, role, email_verified, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
@@ -315,15 +324,15 @@ if (USE_PG) {
         await _run('INSERT INTO chat_sessions (id, user_id, site_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?)',
           [s.id, s.user_id, s.site_id || null, s.title || null, s.created_at, s.updated_at])
       renameSync(JSON_PATH, JSON_PATH + '.migrated')
-      console.log('[DB] Migration complete')
-    } catch (e) { console.error('[DB] Migration failed:', e.message) }
+      log.info({ event: 'json_migration_complete' }, 'Migration complete')
+    } catch (e) { log.error({ event: 'json_migration_failed', err: e.message }, 'Migration failed') }
   }
   await migrateFromJson()
 
   // Startup guard
   const userCount = (await _queryOne('SELECT COUNT(*) as c FROM users'))?.c || 0
   if (userCount === 0) {
-    console.warn('[DB] ⚠️  База данных пуста — нет пользователей. Пытаюсь восстановить из migrated...')
+    log.warn({ event: 'db_empty_no_users' }, 'База данных пуста — нет пользователей. Пытаюсь восстановить из migrated...')
     const recovered = recoverFromMigrated()
     if (recovered && Array.isArray(recovered.users) && recovered.users.length > 0) {
       for (const u of recovered.users)
@@ -334,12 +343,12 @@ if (USE_PG) {
           [s.id, s.user_id, s.url, s.name || null, s.api_token || null, s.wp_version || null, s.verified || 0,
            null, null, null, s.created_at, s.updated_at])
       const restored = (await _queryOne('SELECT COUNT(*) as c FROM users'))?.c || 0
-      console.log(`[DB] ✅ Восстановлено ${restored} пользователей из .migrated`)
+      log.info({ event: 'db_users_restored', count: restored }, `Восстановлено ${restored} пользователей из .migrated`)
     } else {
-      console.warn('[DB] ⚠️  .migrated не найден или пуст. Убедитесь, что volume подключён.')
+      log.warn({ event: 'db_migrated_missing' }, '.migrated не найден или пуст. Убедитесь, что volume подключён.')
     }
   } else {
-    console.log(`[DB] ✅ БД загружена: ${userCount} пользователей`)
+    log.info({ event: 'db_loaded', userCount }, `БД загружена: ${userCount} пользователей`)
   }
 
   // ──── SQLITE INTEGRITY CHECKS ────
@@ -348,23 +357,23 @@ if (USE_PG) {
     try {
       const row = await _queryOne(`SELECT name FROM sqlite_master WHERE type='table' AND name='${table}'`)
       if (!row) {
-        console.error(`[DB] ❌ Обязательная таблица '${table}' отсутствует!`)
+        log.error({ event: 'db_missing_table', table }, `Обязательная таблица '${table}' отсутствует!`)
         if (config.NODE_ENV === 'production') {
-          console.error('[DB] БД повреждена или неполная. Выход.')
+          log.error({ event: 'db_corrupt' }, 'БД повреждена или неполная. Выход.')
           process.exit(1)
         }
       }
     } catch (e) {
-      console.warn(`[DB] ⚠️  Не удалось проверить таблицу '${table}':`, e.message)
+      log.warn({ event: 'db_table_check_error', table, err: e.message }, `Не удалось проверить таблицу '${table}'`)
     }
   }
 
   if (userCount > 0) {
     try {
       const msgCount = (await _queryOne('SELECT COUNT(*) as c FROM messages'))?.c || 0
-      console.log(`[DB] 📊  Сообщений: ${msgCount}`)
+      log.info({ event: 'db_messages_count', msgCount }, `Сообщений: ${msgCount}`)
     } catch (e) {
-      console.warn('[DB] ⚠️  Не удалось прочитать messages:', e.message)
+      log.warn({ event: 'db_messages_read_error', err: e.message }, 'Не удалось прочитать messages')
     }
   }
 }

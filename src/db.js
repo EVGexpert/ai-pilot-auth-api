@@ -15,7 +15,7 @@ export {
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
   updateSessionSummary,
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
-  registerJobHandler,
+  registerJobHandler, startWorker, stopWorker,
   createAuditEvent,
   createRefreshToken, findValidRefreshToken, revokeRefreshToken,
   revokeAllUserTokens, cleanExpiredTokens,

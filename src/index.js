@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
@@ -7,13 +8,42 @@ import chatRoutes from './routes/chat.js'
 import { config } from './config.js'
 import { getStats, getDbHealth } from './db.js'
 import { queryOne, close as closeDb, ping, DB_MODE } from './db/connection.js'
+import { startWorker, stopWorker } from './db/jobs.js'
 import { authMiddleware, adminOnly } from './middleware/auth.js'
+import { createLogger } from './utils/logger.js'
+
+const log = createLogger('auth-api')
 
 
-const app = Fastify({ logger: true, genReqId: () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8) })
+const app = Fastify({
+  logger: false,
+  genReqId: () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+})
 
+// ── Trace ID + request logging ──
 app.addHook('onRequest', async (request) => {
   request.requestId = request.id
+  request.traceId = request.headers['x-trace-id'] || randomUUID()
+  request._startTime = Date.now()
+  log.info({
+    traceId: request.traceId,
+    event: 'request_start',
+    method: request.method,
+    url: request.url,
+    ip: request.ip
+  }, `→ ${request.method} ${request.url}`)
+})
+
+app.addHook('onResponse', async (request, reply) => {
+  const duration = Date.now() - (request._startTime || Date.now())
+  log.info({
+    traceId: request.traceId,
+    event: 'request_end',
+    method: request.method,
+    url: request.url,
+    statusCode: reply.statusCode,
+    durationMs: duration
+  }, `← ${request.method} ${request.url} ${reply.statusCode} ${duration}ms`)
 })
 
 await app.register(cors, {
@@ -46,7 +76,7 @@ app.get('/api/health', async () => {
     await ping()
     checks.database = true
   } catch (e) {
-    console.error('[Health] DB check failed:', e.message)
+    log.error({ event: 'health_db_check_failed', err: e.message }, 'DB check failed')
   }
 
   try {
@@ -59,7 +89,7 @@ app.get('/api/health', async () => {
       checks.disk = true  // PG mode — no local disk check needed
     }
   } catch (e) {
-    console.error('[Health] Disk check failed:', e.message)
+    log.error({ event: 'health_disk_check_failed', err: e.message }, 'Disk check failed')
   }
 
   // ✅ Проверка памяти
@@ -156,10 +186,10 @@ const memoryMonitor = setInterval(() => {
   const usage = mem.heapUsed / mem.heapTotal
   const pct = Math.round(usage * 100)
   if (usage >= MEMORY_SHUTDOWN_THRESHOLD) {
-    console.error(`[Memory] ❌ Heap usage ${pct}% ≥ 95% — triggering graceful shutdown`)
+    log.error({ event: 'memory_critical', heapPercent: pct }, `Heap usage ${pct}% ≥ 95% — triggering graceful shutdown`)
     gracefulShutdown('OOM')
   } else if (usage >= MEMORY_WARN_THRESHOLD) {
-    console.warn(`[Memory] ⚠️  Heap usage ${pct}% ≥ 80% — consider restarting`)
+    log.warn({ event: 'memory_warning', heapPercent: pct }, `Heap usage ${pct}% ≥ 80% — consider restarting`)
   }
 }, MEMORY_CHECK_INTERVAL)
 memoryMonitor.unref() // Don't keep process alive for this timer
@@ -173,14 +203,14 @@ const SHUTDOWN_TIMEOUT_MS = 30_000
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return
   isShuttingDown = true
-  console.log(`[Shutdown] Received ${signal}, shutting down gracefully...`)
+  log.info({ event: 'shutdown_start', signal }, `Received ${signal}, shutting down gracefully...`)
 
   // Stop memory monitor
   clearInterval(memoryMonitor)
 
   // Force-exit after timeout
   const forceTimer = setTimeout(() => {
-    console.error('[Shutdown] ⏱  30s timeout — forcing exit')
+    log.error({ event: 'shutdown_timeout' }, '30s timeout — forcing exit')
     process.exit(1)
   }, SHUTDOWN_TIMEOUT_MS)
   forceTimer.unref()
@@ -188,20 +218,28 @@ async function gracefulShutdown(signal) {
   try {
     // 1. Close HTTP server (stop accepting new connections, drain existing)
     await app.close()
-    console.log('[Shutdown] HTTP server closed')
+    log.info({ event: 'shutdown_http_closed' }, 'HTTP server closed')
   } catch (err) {
-    console.error('[Shutdown] Error closing HTTP server:', err.message)
+    log.error({ event: 'shutdown_http_error', err: err.message }, 'Error closing HTTP server')
+  }
+
+  // Stop worker (finish current job, stop polling)
+  try {
+    stopWorker()
+    log.info({ event: 'shutdown_worker_stopped' }, 'Worker stopped')
+  } catch (err) {
+    log.error({ event: 'shutdown_worker_error', err: err.message }, 'Error stopping worker')
   }
 
   try {
-    // 2. Close DB
+    // 3. Close DB
     await closeDb()
-    console.log('[Shutdown] DB closed')
+    log.info({ event: 'shutdown_db_closed' }, 'DB closed')
   } catch (err) {
-    console.error('[Shutdown] Error closing DB:', err.message)
+    log.error({ event: 'shutdown_db_error', err: err.message }, 'Error closing DB')
   }
 
-  console.log('[Shutdown] Complete')
+  log.info({ event: 'shutdown_complete' }, 'Shutdown complete')
   process.exit(0)
 }
 
@@ -214,9 +252,12 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 const start = async () => {
   try {
     await app.listen({ port: config.PORT, host: '0.0.0.0' })
-    console.log(`Auth API v0.4.0 running on port ${config.PORT} (${DB_MODE} mode)`)
+    log.info({ event: 'server_start', port: config.PORT, dbMode: DB_MODE }, `Auth API v0.4.0 running on port ${config.PORT} (${DB_MODE} mode)`)
+
+    // Start background worker after server is up
+    startWorker()
   } catch (err) {
-    app.log.error(err)
+    log.error({ event: 'server_start_error', err: err.message }, 'Server start failed')
     process.exit(1)
   }
 }

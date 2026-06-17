@@ -1,6 +1,9 @@
 import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION } from '../config/prompt.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger('chat')
 
 /** Хелпер: fetch с таймаутом */
 async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
@@ -279,7 +282,7 @@ ${siteMemoryBlock}` : ''
       const timeout = setTimeout(() => controller.abort(), 30000)
       const resp = await fetch(`${gatewayUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${gatewayToken}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${gatewayToken}`, 'X-Trace-ID': request.traceId },
         signal: controller.signal,
         body
       })
@@ -338,6 +341,7 @@ ${siteMemoryBlock}` : ''
         userId: request.user.sub, siteId: site.id, sessionId: session.id,
         eventType: 'chat_message', entityType: 'message', entityId: assistantMsg.id,
         payload: { role: 'assistant', hasActions: !!actions },
+        traceId: request.traceId,
         status: 'sent'
       })
 
@@ -433,7 +437,7 @@ ${siteMemoryBlock}` : ''
    * Выполнить действие через WordPress Plugin.
    * Создаёт proposal на WP и сразу его подтверждает.
    */
-  async function executeWpAction(siteUrl, apiToken, action, actionId) {
+  async function executeWpAction(siteUrl, apiToken, action, actionId, traceId) {
     if (!apiToken || apiToken === 'pending') {
       throw new Error('API токен WordPress не настроен для этого сайта')
     }
@@ -446,7 +450,8 @@ ${siteMemoryBlock}` : ''
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-AI-Pilot-Token': apiToken
+        'X-AI-Pilot-Token': apiToken,
+        'X-Trace-ID': traceId || ''
       },
       body: JSON.stringify({
         action: action.type,
@@ -475,7 +480,8 @@ ${siteMemoryBlock}` : ''
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-AI-Pilot-Token': apiToken
+        'X-AI-Pilot-Token': apiToken,
+        'X-Trace-ID': traceId || ''
       }
     }, 15000)
 
@@ -541,7 +547,7 @@ ${siteMemoryBlock}` : ''
     let execError = null
 
     try {
-      execResult = await executeWpAction(wpUrl, site.api_token, action, actionId)
+      execResult = await executeWpAction(wpUrl, site.api_token, action, actionId, request.traceId)
     } catch (e) {
       execError = e.message
     }
@@ -550,6 +556,7 @@ ${siteMemoryBlock}` : ''
       userId: request.user.sub, siteId: site.id, sessionId,
       eventType: 'action_approved', entityType: 'action', entityId: actionId,
       payload: { actionId, action, execResult, execError, idempotencyKey },
+      traceId: request.traceId,
       status: execError ? 'failed' : 'completed'
     })
 
@@ -573,6 +580,7 @@ ${siteMemoryBlock}` : ''
       userId: request.user.sub, siteId: null, sessionId,
       eventType: 'action_rejected', entityType: 'action', entityId: actionId,
       payload: { actionId },
+      traceId: request.traceId,
       status: 'completed'
     })
 
