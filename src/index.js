@@ -59,8 +59,8 @@ app.addHook('onRequest', async (request) => {
   }, `→ ${request.method} ${request.url}`)
 })
 
-app.addHook('onResponse', async (request, reply) => {
-  reply.header('X-Trace-Id', request.traceId)
+app.addHook('onSend', async (request, reply, payload) => {
+  reply.header('X-Trace-Id', request.traceId || 'generated')
   const duration = Date.now() - (request._startTime || Date.now())
   log.info({
     traceId: request.traceId,
@@ -70,6 +70,7 @@ app.addHook('onResponse', async (request, reply) => {
     statusCode: reply.statusCode,
     durationMs: duration
   }, `← ${request.method} ${request.url} ${reply.statusCode} ${duration}ms`)
+  return payload
 })
 
 await app.register(cors, {
