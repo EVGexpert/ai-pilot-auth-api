@@ -48,6 +48,7 @@ const app = Fastify({
 // ── Trace ID + request logging ──
 app.addHook('onRequest', async (request) => {
   request.requestId = request.id
+  request.traceId = request.headers['x-trace-id'] || crypto.randomUUID()
   request._startTime = Date.now()
   log.info({
     traceId: request.traceId,
@@ -59,6 +60,7 @@ app.addHook('onRequest', async (request) => {
 })
 
 app.addHook('onResponse', async (request, reply) => {
+  reply.header('X-Trace-Id', request.traceId)
   const duration = Date.now() - (request._startTime || Date.now())
   log.info({
     traceId: request.traceId,
