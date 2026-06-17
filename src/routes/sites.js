@@ -1,6 +1,9 @@
 import { findSitesByUser, findSiteByUserAndUrl, findSiteById, createSite, deleteSite, allSites, updateSiteToken, getSiteMemory, setSiteMemory, formatSiteMemory, createAuditEvent } from '../db.js'
 import { config } from '../config.js'
 import { authMiddleware } from '../middleware/auth.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger('sites')
 
 // ============================================================
 // Хелперы
@@ -101,13 +104,13 @@ async function notifyGateway(url, apiToken, userId) {
     }, 5000)
 
     if (resp.ok) {
-      console.log('[Gateway] Site notification sent for:', url)
+      log.info({ event: 'gateway_notification_sent', url }, 'Site notification sent')
     } else {
       const text = await resp.text()
-      console.warn('[Gateway] Notification failed:', resp.status, text.slice(0, 200))
+      log.warn({ event: 'gateway_notification_failed', status: resp.status, detail: text.slice(0, 200) }, 'Notification failed')
     }
   } catch (err) {
-    console.warn('[Gateway] Notification error:', err.message)
+    log.warn({ event: 'gateway_notification_error', err: err.message }, 'Notification error')
   }
 }
 
@@ -131,7 +134,7 @@ export default async function sitesRoutes(app) {
       await createAuditEvent({
         userId: request.user.sub, eventType: 'connect_code_rate_limited',
         payload: { reason: 'ip_rate_limit', ip }, ipAddress: ip,
-        requestId: request.requestId, status: '429'
+        requestId: request.requestId, traceId: request.traceId, status: '429'
       })
       return reply.status(429).send({ error: 'too_many_attempts', message: 'Слишком много попыток. Попробуйте через минуту.' })
     }
@@ -154,7 +157,7 @@ export default async function sitesRoutes(app) {
         await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: isPluginMissing ? 'wp_plugin_not_found' : 'code_invalid', siteUrl: cleanUrl },
-          ipAddress: ip, requestId: request.requestId, status: String(resp.status)
+          ipAddress: ip, requestId: request.requestId, traceId: request.traceId, status: String(resp.status)
         })
 
         if (isPluginMissing) {
@@ -169,7 +172,7 @@ export default async function sitesRoutes(app) {
         await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: 'site_unreachable', siteUrl: cleanUrl, status: resp.status },
-          ipAddress: ip, requestId: request.requestId, status: String(resp.status)
+          ipAddress: ip, requestId: request.requestId, traceId: request.traceId, status: String(resp.status)
         })
         return reply.status(502).send({ error: 'site_unreachable',
           message: `Сайт не отвечает (HTTP ${resp.status}). Проверьте, что сайт доступен.` })
@@ -180,7 +183,7 @@ export default async function sitesRoutes(app) {
         await createAuditEvent({
           userId: request.user.sub, eventType: 'connect_code_failed',
           payload: { reason: 'code_invalid_response', siteUrl: cleanUrl },
-          ipAddress: ip, requestId: request.requestId, status: '422'
+          ipAddress: ip, requestId: request.requestId, traceId: request.traceId, status: '422'
         })
         return reply.status(422).send({ error: 'code_invalid',
           message: 'Код недействителен или истёк. Сгенерируйте новый в плагине.' })
@@ -209,7 +212,7 @@ export default async function sitesRoutes(app) {
       await createAuditEvent({
         userId: request.user.sub, siteId: site.id, eventType: 'site_connected',
         payload: { method: 'connect_code', siteUrl: cleanUrl },
-        ipAddress: ip, requestId: request.requestId, status: '201'
+        ipAddress: ip, requestId: request.requestId, traceId: request.traceId, status: '201'
       })
 
       return reply.status(201).send({ id: site.id, url: cleanUrl, name: siteName, verified: !!apiToken })
@@ -217,7 +220,7 @@ export default async function sitesRoutes(app) {
       await createAuditEvent({
         userId: request.user.sub, eventType: 'connect_code_error',
         payload: { reason: 'network_error', siteUrl: cleanUrl, error: e.message },
-        ipAddress: ip, requestId: request.requestId, status: '502'
+        ipAddress: ip, requestId: request.requestId, traceId: request.traceId, status: '502'
       })
       return reply.status(502).send({ error: 'site_unreachable',
         message: `Не удалось подключиться к сайту: ${e.message}` })
@@ -250,7 +253,7 @@ export default async function sitesRoutes(app) {
         wpVersion = data.wp_version
       }
     } catch (err) {
-      console.error('Site verification failed:', err.message)
+      log.error({ event: 'site_verification_failed', err: err.message }, 'Site verification failed')
     }
 
     const site = await createSite({

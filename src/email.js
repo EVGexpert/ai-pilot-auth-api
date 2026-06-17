@@ -1,5 +1,8 @@
 import nodemailer from 'nodemailer'
 import { config } from './config.js'
+import { createLogger } from './utils/logger.js'
+
+const log = createLogger('email')
 
 let transporter = null
 
@@ -26,7 +29,7 @@ export async function sendVerificationEmail(email, code) {
 
   if (!transport) {
     // Без SMTP — код не логируем, только факт отправки (безопасность)
-    console.log(`[DEV] Verification would be sent to ${email} (SMTP not configured)`)
+    log.info({ event: 'dev_verification_skip', email }, `Verification would be sent to ${email} (SMTP not configured)`)
     throw new Error('SMTP not configured — cannot send verification email')
   }
 

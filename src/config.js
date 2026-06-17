@@ -1,4 +1,7 @@
 import { existsSync, statSync } from 'fs'
+import { createLogger } from './utils/logger.js'
+
+const log = createLogger('config')
 
 export const APP_VERSION = '0.4.0'
 
@@ -62,7 +65,7 @@ validateProductionConfig()
 // DEV-предупреждения
 if (!isProduction) {
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-secret-change-in-production') {
-    console.warn('[config] ⚠️  Using dev JWT_SECRET — not suitable for production')
+    log.warn({ event: 'dev_jwt_secret' }, 'Using dev JWT_SECRET — not suitable for production')
   }
 }
 
@@ -94,5 +97,5 @@ if (config.DATABASE_PATH) {
   if (exists) {
     try { size = statSync(dbPath).size } catch (e) { /* ignore */ }
   }
-  console.log(`[config] DB path: ${dbPath} (exists: ${exists}, size: ${size} bytes)`)
+  log.info({ event: 'db_path', dbPath, exists, size }, `DB path: ${dbPath} (exists: ${exists}, size: ${size} bytes)`)
 }

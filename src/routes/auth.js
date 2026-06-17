@@ -10,6 +10,9 @@ import {
 } from '../db.js'
 import { generateToken, authMiddleware } from '../middleware/auth.js'
 import { sendVerificationEmail } from '../email.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger('auth')
 
 export default async function authRoutes(app) {
 
@@ -35,7 +38,7 @@ export default async function authRoutes(app) {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase()
     await createVerification(user.id, code)
 
-    try { await sendVerificationEmail(email, code) } catch (err) { console.error('Email failed:', err.message) }
+    try { await sendVerificationEmail(email, code) } catch (err) { log.error({ event: 'email_send_failed', err: err.message }, 'Email failed') }
 
     const token = generateToken(user)
     const refreshToken = await createRefreshToken(user.id, request.headers['user-agent'] || null, request.ip)
@@ -45,7 +48,7 @@ export default async function authRoutes(app) {
       entityType: 'user', entityId: user.id,
       payload: { email, role },
       ipAddress: request.ip, userAgent: request.headers['user-agent'],
-      requestId: request.requestId, status: 'completed'
+      requestId: request.requestId, traceId: request.traceId, status: 'completed'
     })
 
     return reply.status(201).send({
@@ -75,7 +78,7 @@ export default async function authRoutes(app) {
         entityType: 'user', entityId: email,
         payload: { email, reason: 'user_not_found' },
         ipAddress: request.ip, userAgent: request.headers['user-agent'],
-        requestId: request.requestId, status: 'failed'
+        requestId: request.requestId, traceId: request.traceId, status: 'failed'
       })
       return reply.status(401).send({ error: 'Неверный email или пароль' })
     }
@@ -87,7 +90,7 @@ export default async function authRoutes(app) {
         entityType: 'user', entityId: user.id,
         payload: { email, reason: 'wrong_password' },
         ipAddress: request.ip, userAgent: request.headers['user-agent'],
-        requestId: request.requestId, status: 'failed'
+        requestId: request.requestId, traceId: request.traceId, status: 'failed'
       })
       return reply.status(401).send({ error: 'Неверный email или пароль' })
     }
@@ -100,7 +103,7 @@ export default async function authRoutes(app) {
       entityType: 'user', entityId: user.id,
       payload: { email, role: user.role },
       ipAddress: request.ip, userAgent: request.headers['user-agent'],
-      requestId: request.requestId, status: 'completed'
+      requestId: request.requestId, traceId: request.traceId, status: 'completed'
     })
 
     let siteList

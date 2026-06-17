@@ -1,4 +1,7 @@
 import { queryOne, queryAll, run, uid, now, DB_MODE } from './connection.js'
+import { createLogger } from '../utils/logger.js'
+
+const log = createLogger('worker')
 
 // ============================================================
 // JOB CREATION
@@ -176,10 +179,10 @@ async function recoverStaleJobs() {
       [now(), cutoff]
     )
     if (result.changes > 0) {
-      console.log(`[Worker] Recovered ${result.changes} stale job(s)`)
+      log.info({ event: 'stale_jobs_recovered', count: result.changes }, `Recovered ${result.changes} stale job(s)`)
     }
   } catch (e) {
-    console.error('[Worker] Stale job recovery failed:', e.message)
+    log.error({ event: 'stale_recovery_failed', err: e.message }, 'Stale job recovery failed')
   }
 }
 
@@ -223,10 +226,10 @@ async function processNextJob() {
       await completeJob(job.id, result)
     } catch (e) {
       await failJob(job.id, e.message)
-      console.warn('[Worker] Job', job.id, job.type, 'failed:', e.message)
+      log.warn({ event: 'job_failed', jobId: job.id, jobType: job.type, err: e.message }, `Job ${job.id} ${job.type} failed`)
     }
   } catch (e) {
-    console.error('[Worker] Claim/process error:', e.message)
+    log.error({ event: 'worker_claim_error', err: e.message }, 'Claim/process error')
   } finally {
     processing = false
   }
@@ -239,12 +242,12 @@ async function processNextJob() {
 export function startWorker() {
   if (workerTimer) return // Already running
 
-  console.log(`[Worker] Starting (id=${workerId}, mode=${DB_MODE}, poll=${WORKER_POLL_INTERVAL_MS}ms)`)
+  log.info({ event: 'worker_start', workerId, dbMode: DB_MODE, pollMs: WORKER_POLL_INTERVAL_MS }, `Starting worker (id=${workerId}, mode=${DB_MODE})`)
 
   // Main poll loop
   workerTimer = setInterval(() => {
     processNextJob().catch(e => {
-      console.error('[Worker] Unexpected error in poll:', e.message)
+      log.error({ event: 'worker_poll_error', err: e.message }, 'Unexpected error in poll')
     })
   }, WORKER_POLL_INTERVAL_MS)
   workerTimer.unref() // Don't keep process alive for this timer
@@ -252,7 +255,7 @@ export function startWorker() {
   // Stale job recovery loop
   staleTimer = setInterval(() => {
     recoverStaleJobs().catch(e => {
-      console.error('[Worker] Stale recovery error:', e.message)
+      log.error({ event: 'stale_recovery_error', err: e.message }, 'Stale recovery error')
     })
   }, STALE_CHECK_INTERVAL_MS)
   staleTimer.unref()
@@ -275,7 +278,7 @@ export function stopWorker() {
     clearInterval(staleTimer)
     staleTimer = null
   }
-  console.log('[Worker] Stopped')
+  log.info({ event: 'worker_stop' }, 'Worker stopped')
 }
 
 // ============================================================
