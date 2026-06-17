@@ -28,4 +28,4 @@ VOLUME ["/app/data"]
 RUN mkdir -p /app/data
 
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["sh", "-c", "chmod 777 /app/data && exec node --experimental-sqlite src/index.js"]
+CMD ["sh", "-c", "chmod 777 /app/data /app/data/*.db* 2>/dev/null; exec node --experimental-sqlite src/index.js"]
