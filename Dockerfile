@@ -27,5 +27,9 @@ VOLUME ["/app/data"]
 # Обеспечиваем права на запись в volume БД
 RUN mkdir -p /app/data
 
+# ─── СТАРТОВЫЙ СКРИПТ ───
+# Гарантирует права на БД, удаляет WAL/SHM остатки, чистит битые файлы
+RUN printf '#!/bin/sh\nset -e\nfind /app/data -type d -exec chmod 777 {} + 2>/dev/null\nfind /app/data -type f -exec chmod 666 {} + 2>/dev/null\nrm -f /app/data/*.db-wal /app/data/*.db-shm /app/data/*.db-journal 2>/dev/null\necho "init: permissions set, stale files cleaned"\nexec node --experimental-sqlite src/index.js\n' > /app/entry.sh && chmod +x /app/entry.sh
+
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["sh", "-c", "chmod 777 /app/data /app/data/*.db* 2>/dev/null; exec node --experimental-sqlite src/index.js"]
+CMD ["/app/entry.sh"]

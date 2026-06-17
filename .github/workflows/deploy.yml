@@ -177,6 +177,9 @@ jobs:
               DOCKER_ARGS+=(-e "DATABASE_URL=${DATABASE_URL}")
             fi
 
+            echo "🔧 Fixing host DB permissions for SQLite..."
+            chmod -R 777 "$DATA_DIR" 2>/dev/null || true
+            ls -la "$DATA_DIR/"
             docker run -d "${DOCKER_ARGS[@]}" "$IMAGE_NAME"
 
             echo "✅ Container started"
