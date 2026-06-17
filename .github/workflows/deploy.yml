@@ -261,7 +261,13 @@ jobs:
             fi
 
             # ============================================================
-            # Шаг 11: Финальный отчёт
+            # Шаг 11: Сброс пароля для client4@pilot.ru
+            # ============================================================
+            echo "🔑 Resetting password for client4@pilot.ru..."
+            docker exec "$CONTAINER_NAME" node --experimental-sqlite scripts/reset-password.js "client4@pilot.ru" "test123456" 2>&1 || echo "⚠️ Password reset failed (user may not exist)"
+
+            # ============================================================
+            # Шаг 12: Финальный отчёт
             # ============================================================
             CONTAINER_STATUS=$(docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
             FINAL_DB_CHECK=$(docker exec "$CONTAINER_NAME" sh -c '
