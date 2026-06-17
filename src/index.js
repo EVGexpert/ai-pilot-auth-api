@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto'
 import { hostname } from 'os'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
@@ -49,7 +48,6 @@ const app = Fastify({
 // ── Trace ID + request logging ──
 app.addHook('onRequest', async (request) => {
   request.requestId = request.id
-  request.traceId = request.headers['x-trace-id'] || randomUUID()
   request._startTime = Date.now()
   log.info({
     traceId: request.traceId,
