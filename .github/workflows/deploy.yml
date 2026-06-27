@@ -16,7 +16,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: JWT_SECRET,GATEWAY_TOKEN,DEPLOY_HEALTH_TOKEN,DATABASE_URL
+          envs: JWT_SECRET,GATEWAY_TOKEN,DEPLOY_HEALTH_TOKEN,DATABASE_URL,DEEPSEEK_API_KEY
           timeout: 180s
           script: |
             set -e
@@ -83,6 +83,7 @@ jobs:
               -e DATABASE_PATH=/app/data/aipilot.db \
               -e JWT_SECRET=\${{ secrets.JWT_SECRET }} \
               -e DEPLOY_HEALTH_TOKEN=\${{ secrets.DEPLOY_HEALTH_TOKEN }} \
+              -e DEEPSEEK_API_KEY=\${{ secrets.DEEPSEEK_API_KEY }} \
               -e GATEWAY_TOKEN=\${{ secrets.GATEWAY_TOKEN }} \
               -e GATEWAY_WS=ws://host.docker.internal:18789 \
               -e APP_URL=https://pilotsite.ru \
