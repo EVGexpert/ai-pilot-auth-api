@@ -87,27 +87,33 @@ function parseActions(content) {
   return { actions, cleanContent }
 }
 
-async function generateSessionTitle(gatewayUrl, gatewayToken, sessionId, message, displayContent, siteUrl) {
-  const titleResp = await fetch(gatewayUrl + '/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': AUTH_PREFIX + gatewayToken },
-    body: JSON.stringify({
-      model: 'openclaw',
-      messages: [
-        { role: 'system', content: 'Придумай заголовок из 2-3 слов на русском языке для этого диалога. Ответь только этими 2-3 словами, без кавычек, эмодзи и знаков препинания.' },
-        { role: 'user', content: 'Клиент: ' + message + '\n\nАссистент: ' + displayContent }
-      ],
-      user: siteUrl || 'title-gen',
-      max_tokens: 50,
-      temperature: 0.3
+async function generateSessionTitle(sessionId, message, displayContent) {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) return
+
+  try {
+    const titleResp = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: 'Придумай заголовок из 2-3 слов на русском языке для этого диалога. Ответь только этими 2-3 словами, без кавычек, эмодзи и знаков препинания.' },
+          { role: 'user', content: 'Клиент: ' + message + '\n\nАссистент: ' + displayContent }
+        ],
+        max_tokens: 30,
+        temperature: 0.3
+      })
     })
-  })
-  if (titleResp.ok) {
-    const titleData = await titleResp.json()
-    const newTitle = titleData.choices?.[0]?.message?.content?.trim()
-    if (newTitle && newTitle.length < 50) {
-      await updateSessionTitle(sessionId, newTitle)
+    if (titleResp.ok) {
+      const titleData = await titleResp.json()
+      const newTitle = titleData.choices?.[0]?.message?.content?.trim()
+      if (newTitle && newTitle.length < 50) {
+        await updateSessionTitle(sessionId, newTitle)
+      }
     }
+  } catch (e) {
+    // fire-and-forget, игнорируем ошибки
   }
 }
 
@@ -184,7 +190,7 @@ export default async function chatRoutes(app) {
       await createAuditEvent({ userId: request.user.sub, siteId: site.id, sessionId: session.id, eventType: 'chat_message', entityType: 'message', entityId: 'assistant', payload: { role: 'assistant', hasActions: !!actions }, traceId: request.traceId, status: 'sent' })
 
       if (session.title === 'Чат') {
-        generateSessionTitle(gatewayUrl, gatewayToken, session.id, message, displayContent, siteUrl).catch(e => log.warn('Title gen error:', e.message))
+        generateSessionTitle(session.id, message, displayContent).catch(e => log.warn('Title gen error:', e.message))
       }
 
       return reply.send({ message: displayContent, actions, agentId, siteUrl, sessionId: session.id, messageId: userMsg.id })
