@@ -88,7 +88,11 @@ function parseActions(content) {
 }
 
 async function generateSessionTitle(sessionId, message, displayContent) {
-  const apiKey = process.env.DEEPSEEK_API_KEY
+  // Берём ключ из DEEPSEEK_API_KEY или первого из DEEPSEEK_API_KEYS
+  let apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey && process.env.DEEPSEEK_API_KEYS) {
+    apiKey = process.env.DEEPSEEK_API_KEYS.split(',')[0].trim()
+  }
   if (!apiKey) return
 
   try {
