@@ -136,6 +136,30 @@ function parseActions(content) {
   return { actions, cleanContent }
 }
 
+/** Генерация заголовка сессии в фоне (fire-and-forget) */
+async function generateSessionTitle(gatewayUrl, gatewayToken, sessionId, message, displayContent) {
+  const titleResp = await fetch(gatewayUrl + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + gatewayToken },
+    body: JSON.stringify({
+      model: 'openclaw',
+      messages: [
+        { role: 'system', content: 'Ты — AI, который придумывает короткие заголовки (2-3 слова, на русском) для чат-диалогов. Ответь только заголовком, без лишнего текста, без кавычек.' },
+        { role: 'user', content: 'Клиент: ' + message + '\n\nАссистент: ' + displayContent }
+      ],
+      max_tokens: 20,
+      temperature: 0.3
+    })
+  })
+  if (titleResp.ok) {
+    const titleData = await titleResp.json()
+    const newTitle = titleData.choices?.[0]?.message?.content?.trim()
+    if (newTitle && newTitle.length < 50) {
+      await updateSessionTitle(sessionId, newTitle)
+    }
+  }
+}
+
 export default async function chatRoutes(app) {
   const FULL_PROMPT = `Ты AI-помощник для WordPress-сайта.\n\nПравила:\n${CORE_RULES}`
 
@@ -251,32 +275,11 @@ export default async function chatRoutes(app) {
         payload: { role: 'assistant', hasActions: !!actions }, traceId: request.traceId, status: 'sent'
       })
 
-      // Авто-генерация заголовка, если дефолтный
+      // Авто-генерация заголовка в фоне (не блокирует ответ)
       if (session.title === 'Чат') {
-        try {
-          const titleResp = await fetch(gatewayUrl + '/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + gatewayToken },
-            body: JSON.stringify({
-              model: 'openclaw',
-              messages: [
-                { role: 'system', content: 'Ты — AI, который придумывает короткие заголовки (2-3 слова, на русском) для чат-диалогов. Ответь только заголовком, без лишнего текста, без кавычек.' },
-                { role: 'user', content: 'Клиент: ' + message + '\n\nАссистент: ' + displayContent }
-              ],
-              max_tokens: 20,
-              temperature: 0.3
-            })
-          })
-          if (titleResp.ok) {
-            const titleData = await titleResp.json()
-            const newTitle = titleData.choices?.[0]?.message?.content?.trim()
-            if (newTitle && newTitle.length < 50) {
-              await updateSessionTitle(session.id, newTitle)
-            }
-          }
-        } catch (e) {
+        generateSessionTitle(gatewayUrl, gatewayToken, session.id, message, displayContent).catch(e => {
           log.warn('Title generation failed:', e.message)
-        }
+        })
       }
 
       return reply.send({
