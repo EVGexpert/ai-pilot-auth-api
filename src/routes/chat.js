@@ -381,6 +381,8 @@ ${siteMemoryBlock}` : ''
         title: s.title || 'Чат',
         preview: lastMsg ? lastMsg.content.slice(0, 60) : '',
         date: s.created_at.slice(0, 10),
+        createdAt: s.created_at,
+        updatedAt: s.updated_at,
         messageCount: msgs.length,
         lastMessage: lastMsg ? { role: lastMsg.role, created_at: lastMsg.created_at } : null
       })
