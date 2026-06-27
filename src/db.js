@@ -13,7 +13,7 @@ export {
   getSiteMemory, getSiteMemoryByKey, setSiteMemory, deleteSiteMemory, formatSiteMemory,
   createChatSession, findSessionsByUserAndSite, findSessionById,
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
-  updateSessionSummary,
+  updateSessionSummary, updateSessionTitle,
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
   registerJobHandler, startWorker, stopWorker,
   createAuditEvent,

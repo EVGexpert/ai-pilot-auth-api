@@ -1,4 +1,4 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, updateSessionTitle, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION } from '../config/prompt.js'
 import { createLogger } from '../utils/logger.js'
@@ -76,9 +76,6 @@ function buildSystemPrompt(site, siteUrl, message, contextSummary) {
   return `Ты AI-помощник для сайта ${site.name || siteUrl}.${contextSummary}\n\nПравила:\n${CORE_RULES}\n${greetingBlock}`
 }
 
-/**
- * JSON Schema для валидации структурированного действия от модели.
- */
 const ACTION_SCHEMA = {
   type: 'object',
   required: ['type', 'target', 'patch'],
@@ -102,9 +99,6 @@ const ACTION_RESPONSE_SCHEMA = {
   }
 }
 
-/**
- * Простая валидация JSON по схеме.
- */
 function validateActionJson(data) {
   if (!data || typeof data !== 'object') return false
   if (!Array.isArray(data.actions) || data.actions.length === 0) return false
@@ -115,13 +109,8 @@ function validateActionJson(data) {
   return true
 }
 
-/**
- * Парсит структурированный JSON из ответа модели.
- * Ищет блок ```action ...``` или ```json ...``` в ответе.
- */
 function parseStructuredActions(content) {
-  // Пробуем найти блок ```action или ```json
-  const blockMatch = content.match(/```(?:action|json)\s*([\s\S]*?)```/)
+  const blockMatch = content.match(/\`\`\`(?:action|json)\s*([\s\S]*?)\`\`\`/)
   if (!blockMatch) return null
   try {
     const data = JSON.parse(blockMatch[1])
@@ -132,19 +121,10 @@ function parseStructuredActions(content) {
   }
 }
 
-/**
- * Парсит структурированные действия из ответа модели (```action ... ```).
- * Эвристика отключена — только явный JSON.
- *
- * @param {string} content - ответ модели
- * @returns {{ actions: Array|null, cleanContent: string }}
- */
 function parseActions(content) {
   const structured = parseStructuredActions(content)
-  // Только структурированный JSON — эвристика отключена
   if (!structured || !validateActionJson(structured)) return null
-
-  const cleanContent = content.replace(/```(?:action|json)\s*[\s\S]*?```/g, '').trim()
+  const cleanContent = content.replace(/\`\`\`(?:action|json)\s*[\s\S]*?\`\`\`/g, '').trim()
   const actions = structured.actions.map(a => ({
     id: 'ap_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
     title: a.type.replace(/_/g, ' ') + (a.target?.title ? ': ' + a.target.title : ''),
@@ -157,38 +137,25 @@ function parseActions(content) {
 }
 
 export default async function chatRoutes(app) {
-
-  // Промпт для AI Pilot — единый источник
   const FULL_PROMPT = `Ты AI-помощник для WordPress-сайта.\n\nПравила:\n${CORE_RULES}`
 
   app.get('/prompt', async (request, reply) => {
     return reply.send({ prompt: FULL_PROMPT, coreRules: CORE_RULES, version: '1.0.0' })
   })
 
-  // Отправить сообщение от клиента к агенту сайта
   app.post('/send', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
-
     const { message, siteUrl, sessionId } = request.body || {}
     if (!message || !siteUrl) {
       return reply.status(400).send({ error: 'message и siteUrl обязательны' })
     }
-
-    // Проверяем, что сайт принадлежит пользователю
     const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
-    if (!site) {
-      return reply.status(403).send({ error: 'Сайт не привязан к вашему аккаунту' })
-    }
-
-    // Проверяем API токен ДО любых запросов к WP
+    if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
     if (!site.api_token || site.api_token === 'pending') {
-      return reply.status(400).send({
-        error: 'API токен не найден. Сгенерируйте токен в AI Pilot → Настройки на вашем сайте'
-      })
+      return reply.status(400).send({ error: 'API токен не найден' })
     }
 
-    // Создаём или используем указанную сессию
     let session
     if (sessionId) {
       const existingSession = await findSessionById(sessionId)
@@ -201,7 +168,6 @@ export default async function chatRoutes(app) {
       session = await findOrCreateSession(request.user.sub, site.id)
     }
 
-    // Контекст сайта — из кэша (без ожидания WP)
     let contextSummary = ''
     const cacheAge = site.cached_at ? (Date.now() - new Date(site.cached_at).getTime()) / 1000 : Infinity
     if (site.cached_structure && cacheAge < 3600) {
@@ -210,47 +176,24 @@ export default async function chatRoutes(app) {
         if (struct?.site) {
           contextSummary = `\nКонтекст сайта (из кэша):\n- Название: ${struct.site.name || site.name}\n- Описание: ${struct.site.description || ''}\n- WP: ${struct.site.wp_version || ''}\n- Плагины: ${struct.plugins?.active || 0} активных\n- Посты: ${struct.content?.posts?.length || 0}\n- Страницы: ${struct.content?.pages?.length || 0}`
         }
-      } catch (e) { /* кэш битый */ }
+      } catch (e) { }
     }
-
-    // Фоновое обновление кэша — через очередь
     if (!contextSummary) {
-      await createJob({
-        type: 'refresh_context',
-        siteId: site.id,
-        userId: request.user.sub,
-        payload: { siteUrl, apiToken: site.api_token },
-        maxAttempts: 1
-      })
+      await createJob({ type: 'refresh_context', siteId: site.id, userId: request.user.sub, payload: { siteUrl, apiToken: site.api_token }, maxAttempts: 1 })
     }
 
-    // Добавляем память сайта в контекст
     const siteMemoryBlock = await formatSiteMemory(site.id)
-    const memoryContext = siteMemoryBlock ? `
-
-Память о предыдущих решениях:
-${siteMemoryBlock}` : ''
-
-    // Собираем промпт
+    const memoryContext = siteMemoryBlock ? `\n\nПамять о предыдущих решениях:\n${siteMemoryBlock}` : ''
     const systemPrompt = buildSystemPrompt(site, siteUrl, message, contextSummary + memoryContext)
 
-    // Сохраняем сообщение пользователя со статусом 'pending'
     const userMsg = await createMessage({
-      sessionId: session.id,
-      role: 'user',
-      content: message,
-      metadata: { siteUrl },
-      source: 'client',
-      status: 'received'
+      sessionId: session.id, role: 'user', content: message, metadata: { siteUrl }, source: 'client', status: 'received'
     })
 
     const agentId = getAgentId(siteUrl)
     const gatewayUrl = process.env.GATEWAY_URL || 'http://host.docker.internal:18789'
-    // Gateway token: сначала из БД, потом из env
     let gatewayToken = await getConfigValue('gateway_token')
-    if (!gatewayToken) {
-      gatewayToken = process.env.GATEWAY_TOKEN || process.env.VITE_GATEWAY_TOKEN || ''
-    }
+    if (!gatewayToken) gatewayToken = process.env.GATEWAY_TOKEN || process.env.VITE_GATEWAY_TOKEN || ''
     if (!gatewayToken || gatewayToken === 'dev-gateway-token') {
       return reply.status(500).send({ error: 'GATEWAY_TOKEN не настроен' })
     }
@@ -258,26 +201,17 @@ ${siteMemoryBlock}` : ''
     try {
       const model = 'openclaw'
       const prefixedMessage = `[client:${siteUrl}] ${message}`
-      
-      // Загружаем историю сессии (последние 12 сообщений)
-      const historyMessages = (await getMessagesBySession(session.id))
-        .slice(-12)
-        .map(m => ({ role: m.role, content: m.content }))
-      
-      // Если есть summary сессии и история длинная — добавляем как контекст
+      const historyMessages = (await getMessagesBySession(session.id)).slice(-12).map(m => ({ role: m.role, content: m.content }))
       let summaryBlock = ''
       if (session.summary && historyMessages.length >= 8) {
         summaryBlock = `\n\nКонтекст сессии:\n${session.summary}`
       }
-      
       const messages = [
         { role: 'system', content: systemPrompt + summaryBlock },
         ...historyMessages,
         { role: 'user', content: prefixedMessage }
       ]
-
       const body = JSON.stringify({ model, messages, user: siteUrl, max_tokens: 4096, stream: false })
-
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 30000)
       const resp = await fetch(`${gatewayUrl}/v1/chat/completions`, {
@@ -287,102 +221,90 @@ ${siteMemoryBlock}` : ''
         body
       })
       clearTimeout(timeout)
-
       if (!resp.ok) {
         const text = await resp.text()
         await updateMessageStatus(userMsg.id, 'failed')
-        return reply.status(resp.status).send({
-          error: 'Gateway request failed',
-          detail: text.slice(0, 500)
-        })
+        return reply.status(resp.status).send({ error: 'Gateway request failed', detail: text.slice(0, 500) })
       }
-
       const data = await resp.json()
       const rawContent = data.choices?.[0]?.message?.content || ''
-
-      // Парсим действия из ответа модели (structured JSON или эвристика)
       const parsed = parseActions(rawContent)
       const actions = parsed?.actions || null
       const displayContent = parsed?.cleanContent || rawContent
 
-      // Обновляем статус сообщения пользователя
       await updateMessageStatus(userMsg.id, 'sent')
-
-      // Сохраняем ответ ассистента
       const assistantMsg = await createMessage({
-        sessionId: session.id,
-        role: 'assistant',
-        content: displayContent,
+        sessionId: session.id, role: 'assistant', content: displayContent,
         metadata: { agentId, model, actions: actions ? JSON.stringify(actions) : null },
-        source: 'gateway',
-        status: 'sent'
+        source: 'gateway', status: 'sent'
       })
 
-      // Пишем в память WordPress через очередь
       if (message.trim() !== '/start') {
-        await createJob({
-          type: 'sync_wp_memory',
-          siteId: site.id,
-          userId: request.user.sub,
-          sessionId: session.id,
-          payload: {
-            siteUrl, apiToken: site.api_token,
-            message, response: displayContent, agentId
-          },
-          maxAttempts: 3
-        })
+        await createJob({ type: 'sync_wp_memory', siteId: site.id, userId: request.user.sub, sessionId: session.id, payload: { siteUrl, apiToken: site.api_token, message, response: displayContent, agentId }, maxAttempts: 3 })
       }
 
-      // Авто-обновление session summary (при длинных диалогах)
       await updateSessionSummary(session.id)
 
-      // Audit log для отправленного сообщения
       await createAuditEvent({
         userId: request.user.sub, siteId: site.id, sessionId: session.id,
         eventType: 'chat_message', entityType: 'message', entityId: assistantMsg.id,
-        payload: { role: 'assistant', hasActions: !!actions },
-        traceId: request.traceId,
-        status: 'sent'
+        payload: { role: 'assistant', hasActions: !!actions }, traceId: request.traceId, status: 'sent'
       })
 
+      // Авто-генерация заголовка, если дефолтный
+      if (session.title === 'Чат') {
+        try {
+          const titleResp = await fetch(gatewayUrl + '/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + gatewayToken },
+            body: JSON.stringify({
+              model: 'openclaw',
+              messages: [
+                { role: 'system', content: 'Ты — AI, который придумывает короткие заголовки (2-3 слова, на русском) для чат-диалогов. Ответь только заголовком, без лишнего текста, без кавычек.' },
+                { role: 'user', content: 'Клиент: ' + message + '\n\nАссистент: ' + displayContent }
+              ],
+              max_tokens: 20,
+              temperature: 0.3
+            })
+          })
+          if (titleResp.ok) {
+            const titleData = await titleResp.json()
+            const newTitle = titleData.choices?.[0]?.message?.content?.trim()
+            if (newTitle && newTitle.length < 50) {
+              await updateSessionTitle(session.id, newTitle)
+            }
+          }
+        } catch (e) {
+          log.warn('Title generation failed:', e.message)
+        }
+      }
+
       return reply.send({
-        message: displayContent,
-        actions,
-        agentId,
-        siteUrl,
-        sessionId: session.id,
-        messageId: userMsg.id
+        message: displayContent, actions, agentId, siteUrl, sessionId: session.id, messageId: userMsg.id
       })
     } catch (e) {
       if (userMsg) await updateMessageStatus(userMsg.id, 'failed')
-      return reply.status(502).send({ error: `Chat proxy failed: ${e.message}` })
+      return reply.status(502).send({ error: 'Chat proxy failed: ' + e.message })
     }
   })
 
-  // Список сессий с превью
   app.get('/sessions', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
-
     const { siteUrl } = request.query
     if (!siteUrl) return reply.status(400).send({ error: 'siteUrl обязателен' })
-
     const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
-
     const sessions = await findSessionsByUserAndSite(request.user.sub, site.id)
     const result = []
     for (const s of sessions) {
       const msgs = await getMessagesBySession(s.id)
       const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null
-      const userMsgs = msgs.filter(m => m.role === 'user')
       result.push({
-        id: s.id,
-        title: s.title || 'Чат',
+        id: s.id, title: s.title || 'Чат',
         preview: lastMsg ? lastMsg.content.slice(0, 60) : '',
         date: s.created_at.slice(0, 10),
-        createdAt: s.created_at,
-        updatedAt: s.updated_at,
+        createdAt: s.created_at, updatedAt: s.updated_at,
         messageCount: msgs.length,
         lastMessage: lastMsg ? { role: lastMsg.role, created_at: lastMsg.created_at } : null
       })
@@ -390,39 +312,26 @@ ${siteMemoryBlock}` : ''
     return reply.send({ sessions: result })
   })
 
-  // Новая сессия
   app.post('/new', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
-
     const { siteUrl } = request.body || {}
     if (!siteUrl) return reply.status(400).send({ error: 'siteUrl обязателен' })
-
     const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
-
     const session = await createChatSession({ userId: request.user.sub, siteId: site.id, title: 'Чат' })
     return reply.send({ sessionId: session.id })
   })
 
-  // История сообщений для сессии
-  // История сообщений — только свои сессии (BOLA protection)
   app.get('/history', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
-
     const { siteUrl, sessionId } = request.query
-    if (!siteUrl && !sessionId) {
-      return reply.status(400).send({ error: 'Укажите siteUrl или sessionId' })
-    }
-
+    if (!siteUrl && !sessionId) return reply.status(400).send({ error: 'Укажите siteUrl или sessionId' })
     let sid = sessionId
     if (sid) {
-      // Если передан sessionId — проверяем, что сессия принадлежит пользователю
       const session = await findSessionById(sid)
-      if (!session || session.user_id !== request.user.sub) {
-        return reply.status(403).send({ error: 'Session not found or access denied' })
-      }
+      if (!session || session.user_id !== request.user.sub) return reply.status(403).send({ error: 'Session not found or access denied' })
     } else {
       const site = await findSiteByUserAndUrl(request.user.sub, siteUrl)
       if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
@@ -430,162 +339,65 @@ ${siteMemoryBlock}` : ''
       if (sessions.length === 0) return reply.send({ messages: [], sessionId: null })
       sid = sessions[0].id
     }
-
     const messages = await getMessagesBySession(sid)
     return reply.send({ messages, sessionId: sid })
   })
 
-  /**
-   * Выполнить действие через WordPress Plugin.
-   * Создаёт proposal на WP и сразу его подтверждает.
-   */
   async function executeWpAction(siteUrl, apiToken, action, actionId, traceId) {
-    if (!apiToken || apiToken === 'pending') {
-      throw new Error('API токен WordPress не настроен для этого сайта')
-    }
-
+    if (!apiToken || apiToken === 'pending') throw new Error('API токен WordPress не настроен')
     const baseUrl = siteUrl.replace(/\/+$/, '')
     const wpRestUrl = baseUrl + '/wp-json/aipilot/v1'
-
-    // 1. Создаём proposal на WP
     const proposeRes = await fetchWithTimeout(wpRestUrl + '/agent/propose', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-AI-Pilot-Token': apiToken,
-        'X-Trace-ID': traceId || ''
-      },
-      body: JSON.stringify({
-        action: action.type,
-        params: {
-          target: action.target,
-          patch: action.patch
-        },
-        summary: action.title || (action.type + ': ' + JSON.stringify(action.target))
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AI-Pilot-Token': apiToken, 'X-Trace-ID': traceId || '' },
+      body: JSON.stringify({ action: action.type, params: { target: action.target, patch: action.patch }, summary: action.title || (action.type + ': ' + JSON.stringify(action.target)) })
     }, 15000)
-
-    if (!proposeRes.ok) {
-      const errText = await proposeRes.text().catch(() => 'Unknown error')
-      throw new Error('WP propose failed: ' + proposeRes.status + ' ' + errText.slice(0, 200))
-    }
-
+    if (!proposeRes.ok) { const t = await proposeRes.text().catch(() => ''); throw new Error('WP propose failed: ' + proposeRes.status + ' ' + t.slice(0, 200)) }
     const proposal = await proposeRes.json()
     const proposalId = proposal.id || proposal.proposal?.id
-
-    if (!proposalId) {
-      throw new Error('WP propose вернул ответ без id')
-    }
-
-    // 2. Подтверждаем proposal — WP выполнит действие
+    if (!proposalId) throw new Error('WP propose без id')
     const approveRes = await fetchWithTimeout(wpRestUrl + '/agent/approve/' + proposalId, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-AI-Pilot-Token': apiToken,
-        'X-Trace-ID': traceId || ''
-      }
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AI-Pilot-Token': apiToken, 'X-Trace-ID': traceId || '' }
     }, 15000)
-
-    if (!approveRes.ok) {
-      const errText = await approveRes.text().catch(() => 'Unknown error')
-      throw new Error('WP approve failed: ' + approveRes.status + ' ' + errText.slice(0, 200))
-    }
-
+    if (!approveRes.ok) { const t = await approveRes.text().catch(() => ''); throw new Error('WP approve failed: ' + approveRes.status + ' ' + t.slice(0, 200)) }
     const result = await approveRes.json()
     return { proposalId, result }
   }
 
-  // Подтвердить действие → выполнить на WP (с идемпотентностью)
   app.post('/actions/approve', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
-
     const { actionId, sessionId, siteUrl, action } = request.body || {}
     if (!actionId) return reply.status(400).send({ error: 'actionId обязателен' })
     if (!action || !action.type) return reply.status(400).send({ error: 'action.type обязателен' })
-
-    // Генерируем idempotency key
     const idempotencyKey = generateActionKey(action)
-
-    // Проверяем, не выполнялось ли уже такое действие
     const existing = await findActionByKey(idempotencyKey)
     if (existing && existing.status === 'completed' && existing.result_json) {
-      return reply.send({
-        status: 'approved',
-        actionId,
-        wpProposalId: JSON.parse(existing.result_json)?.proposalId,
-        idempotent: true,
-        cached: true
-      })
+      return reply.send({ status: 'approved', actionId, wpProposalId: JSON.parse(existing.result_json)?.proposalId, idempotent: true, cached: true })
     }
-
-    // Определяем сайт
     let wpUrl = siteUrl
     if (!wpUrl && sessionId) {
       const session = await findSessionById(sessionId)
-      if (session) {
-        const site = await findSiteById(session.site_id)
-        if (site) wpUrl = site.url
-      }
+      if (session) { const site = await findSiteById(session.site_id); if (site) wpUrl = site.url }
     }
-
     const site = await findSiteByUserAndUrl(request.user.sub, wpUrl)
     if (!site) return reply.status(403).send({ error: 'Сайт не привязан' })
-
-    // Создаём запись с idempotency key
-    const actionReq = existing || await createActionRequest({
-      userId: request.user.sub, siteId: site.id, sessionId, action
-    })
-
-    if (actionReq.status === 'processing') {
-      return reply.status(409).send({ error: 'Действие уже выполняется', actionId })
-    }
-
-    // Ставим статус processing сразу — блокируем дубли
+    const actionReq = existing || await createActionRequest({ userId: request.user.sub, siteId: site.id, sessionId, action })
+    if (actionReq.status === 'processing') return reply.status(409).send({ error: 'Действие уже выполняется', actionId })
     await updateActionStatus(actionReq.id, 'processing')
-
-    let execResult = null
-    let execError = null
-
-    try {
-      execResult = await executeWpAction(wpUrl, site.api_token, action, actionId, request.traceId)
-    } catch (e) {
-      execError = e.message
-    }
-
-    await createAuditEvent({
-      userId: request.user.sub, siteId: site.id, sessionId,
-      eventType: 'action_approved', entityType: 'action', entityId: actionId,
-      payload: { actionId, action, execResult, execError, idempotencyKey },
-      traceId: request.traceId,
-      status: execError ? 'failed' : 'completed'
-    })
-
+    let execResult = null; let execError = null
+    try { execResult = await executeWpAction(wpUrl, site.api_token, action, actionId, request.traceId) } catch (e) { execError = e.message }
+    await createAuditEvent({ userId: request.user.sub, siteId: site.id, sessionId, eventType: 'action_approved', entityType: 'action', entityId: actionId, payload: { actionId, action, execResult, execError, idempotencyKey }, traceId: request.traceId, status: execError ? 'failed' : 'completed' })
     await updateActionStatus(actionReq.id, execError ? 'failed' : 'completed', { proposalId: execResult?.proposalId, result: execResult })
-
-    if (execError) {
-      return reply.status(502).send({ status: 'failed', error: execError, actionId })
-    }
-
+    if (execError) return reply.status(502).send({ status: 'failed', error: execError, actionId })
     return reply.send({ status: 'approved', actionId, wpProposalId: execResult?.proposalId, idempotent: false })
   })
 
-  // Отклонить действие (только аудит, WP не трогаем)
   app.post('/actions/reject', async (request, reply) => {
     const err = authGuard(request, reply)
     if (err) return err
     const { actionId, sessionId } = request.body || {}
     if (!actionId) return reply.status(400).send({ error: 'actionId обязателен' })
-
-    await createAuditEvent({
-      userId: request.user.sub, siteId: null, sessionId,
-      eventType: 'action_rejected', entityType: 'action', entityId: actionId,
-      payload: { actionId },
-      traceId: request.traceId,
-      status: 'completed'
-    })
-
+    await createAuditEvent({ userId: request.user.sub, siteId: null, sessionId, eventType: 'action_rejected', entityType: 'action', entityId: actionId, payload: { actionId }, traceId: request.traceId, status: 'completed' })
     return reply.send({ status: 'rejected', actionId })
   })
 }

@@ -23,7 +23,7 @@ export {
 export {
   createChatSession, findSessionsByUserAndSite, findSessionById,
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
-  updateSessionSummary
+  updateSessionSummary, updateSessionTitle
 } from './chat.js'
 
 export {

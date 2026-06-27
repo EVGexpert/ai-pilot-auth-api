@@ -41,3 +41,7 @@ export async function updateSessionSummary(sessionId) {
   await run('UPDATE chat_sessions SET summary = ?, summary_updated_at = ? WHERE id = ?', [summary, new Date().toISOString(), sessionId])
   return true
 }
+
+export async function updateSessionTitle(sessionId, title) {
+  await run('UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?', [title, new Date().toISOString(), sessionId])
+}
