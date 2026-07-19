@@ -94,6 +94,11 @@ if (USE_PG) {
     await _run('INSERT INTO schema_version (version, applied_at) VALUES (5, ?)', [now()])
     ver = 5
   }
+  if (ver < 12) {
+    try { await _run('ALTER TABLE sites ADD COLUMN cached_capabilities TEXT') } catch (e) { /* already exists */ }
+    await _run('INSERT INTO schema_version (version, applied_at) VALUES (12, ?)', [now()])
+    ver = 12
+  }
   // Note: migrations 2-4, 6-10 are CREATE TABLE IF NOT EXISTS which are handled by 001_init.sql
 
   log.info({ event: 'pg_migrations', version: ver }, `PostgreSQL migrations: v${ver}`)
@@ -145,7 +150,7 @@ if (USE_PG) {
   db.exec(`CREATE TABLE IF NOT EXISTS sites (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, url TEXT NOT NULL, name TEXT,
     api_token TEXT, wp_version TEXT, verified INTEGER DEFAULT 0,
-    cached_structure TEXT, cached_soul TEXT, cached_at TEXT,
+    cached_structure TEXT, cached_soul TEXT, cached_at TEXT, cached_capabilities TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
   )`)
@@ -288,6 +293,12 @@ if (USE_PG) {
     await _run('INSERT INTO schema_version (version, applied_at) VALUES (11, ?)', [now()])
     log.info({ event: 'migration_v11' }, 'Migration v11: stale jobs index added')
     ver = 11
+  }
+  if (ver < 12) {
+    try { await _run('ALTER TABLE sites ADD COLUMN cached_capabilities TEXT') } catch (e) { /* already exists */ }
+    await _run('INSERT INTO schema_version (version, applied_at) VALUES (12, ?)', [now()])
+    log.info({ event: 'migration_v12' }, 'Migration v12: sites.cached_capabilities added')
+    ver = 12
   }
 
   // ──── JSON MIGRATION (legacy) ────

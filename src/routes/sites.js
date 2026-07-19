@@ -1,4 +1,4 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, createSite, deleteSite, allSites, updateSiteToken, getSiteMemory, setSiteMemory, formatSiteMemory, createAuditEvent } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, createSite, deleteSite, allSites, updateSiteToken, getSiteMemory, setSiteMemory, formatSiteMemory, createAuditEvent, setCachedProfile } from '../db.js'
 import { config } from '../config.js'
 import { authMiddleware } from '../middleware/auth.js'
 import { createLogger } from '../utils/logger.js'
@@ -95,6 +95,34 @@ async function notifyGateway(url, apiToken, userId) {
   }
 }
 
+/**
+ * Запросить capability profile с сайта и закэшировать его (Mode Router).
+ * Fallback: 404/5xx/таймаут/мусор = старый плагин, работаем как раньше.
+ * Fire-and-forget — не блокирует connect.
+ */
+async function fetchAndCacheCapabilities(siteId, siteUrl, apiToken) {
+  if (!apiToken || apiToken === 'pending') return
+  const base = siteUrl.replace(/\/+$/, '')
+  try {
+    const resp = await fetchWithTimeout(
+      base + '/wp-json/aipilot/v1/agent/capabilities',
+      { headers: { 'X-AI-Pilot-Token': apiToken } },
+      5000
+    )
+    if (!resp.ok) {
+      log.info({ event: 'capabilities_not_available', siteId, status: resp.status }, 'Capability endpoint not available (fallback)')
+      return
+    }
+    const profile = await resp.json()
+    if (profile && typeof profile === 'object') {
+      await setCachedProfile(siteId, profile)
+      log.info({ event: 'capabilities_cached', siteId, mode: profile.authoring_mode || profile.mode || null }, 'Capability profile cached')
+    }
+  } catch (err) {
+    log.warn({ event: 'capabilities_fetch_error', siteId, err: err.message }, 'Capability fetch failed (fallback)')
+  }
+}
+
 // ============================================================
 // Routes
 // ============================================================
@@ -177,6 +205,7 @@ export default async function sitesRoutes(app) {
         await updateSiteToken(existingSite.id, apiToken)
         if (apiToken) {
           notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
+          fetchAndCacheCapabilities(existingSite.id, cleanUrl, apiToken).catch(() => {})
         }
         return reply.send({ id: existingSite.id, url: cleanUrl, name: siteName, verified: !!apiToken })
       }
@@ -188,6 +217,7 @@ export default async function sitesRoutes(app) {
 
       if (apiToken) {
         notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
+        fetchAndCacheCapabilities(site.id, cleanUrl, apiToken).catch(() => {})
       }
 
       await createAuditEvent({
@@ -244,6 +274,7 @@ export default async function sitesRoutes(app) {
 
     if (apiToken && apiToken !== 'pending') {
       notifyGateway(cleanUrl, apiToken, request.user.sub).catch(() => {})
+      fetchAndCacheCapabilities(site.id, cleanUrl, apiToken).catch(() => {})
     }
 
     return reply.status(201).send({ id: site.id, url: cleanUrl, name: siteName, wpVersion, verified: !!wpVersion })

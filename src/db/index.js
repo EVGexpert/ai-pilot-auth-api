@@ -21,6 +21,11 @@ export {
 } from './site_memory.js'
 
 export {
+  getCachedProfile, setCachedProfile, isProfileFresh,
+  getAuthoringMode, parseProfile, CAPABILITY_TTL_MS
+} from './capability_cache.js'
+
+export {
   createChatSession, findSessionsByUserAndSite, findSessionById,
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
   updateSessionSummary

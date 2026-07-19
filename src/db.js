@@ -11,6 +11,7 @@ export {
   findSitesByUser, findSiteByUserAndUrl, findSiteById,
   createSite, updateSiteCache, updateSiteToken, deleteSite, allSites,
   getSiteMemory, getSiteMemoryByKey, setSiteMemory, deleteSiteMemory, formatSiteMemory,
+  getCachedProfile, setCachedProfile, isProfileFresh, getAuthoringMode, parseProfile,
   createChatSession, findSessionsByUserAndSite, findSessionById,
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
   updateSessionSummary,

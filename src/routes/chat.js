@@ -1,6 +1,6 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus, setCachedProfile, parseProfile } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
-import { CORE_RULES, GREETING_INSTRUCTION } from '../config/prompt.js'
+import { CORE_RULES, GREETING_INSTRUCTION, getModePromptSnippet } from '../config/prompt.js'
 import { createLogger } from '../utils/logger.js'
 
 const log = createLogger('chat')
@@ -21,22 +21,45 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 registerJobHandler('refresh_context', async (job) => {
   const { siteUrl, apiToken } = JSON.parse(job.payload_json)
   if (!apiToken || apiToken === 'pending') return
+  const base = siteUrl.replace(/\/+$/, '')
+  const site = await findSiteByUserAndUrl(job.user_id, siteUrl)
+
+  // 1) Site context (structure + soul) — существующий flow
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 3000)
   const ctxRes = await fetch(
-    siteUrl.replace(/\/+$/, '') + '/wp-json/aipilot/v1/agent/context',
+    base + '/wp-json/aipilot/v1/agent/context',
     { headers: { 'X-AI-Pilot-Token': apiToken }, signal: controller.signal }
   )
   clearTimeout(timeout)
   if (ctxRes.ok) {
     const ctx = await ctxRes.json()
-    const site = await findSiteByUserAndUrl(job.user_id, siteUrl)
     if (site) {
       await updateSiteCache(site.id, {
         cached_structure: JSON.stringify(ctx.structure || ctx),
         cached_soul: JSON.stringify(ctx.soul || {}),
         cached_at: new Date().toISOString()
       })
+    }
+  }
+
+  // 2) Capability profile (GET /agent/capabilities) — Mode Router
+  //    Fallback: 404/5xx/таймаут = старый плагин, работаем как раньше.
+  if (site) {
+    try {
+      const capRes = await fetchWithTimeout(
+        base + '/wp-json/aipilot/v1/agent/capabilities',
+        { headers: { 'X-AI-Pilot-Token': apiToken } },
+        3000
+      )
+      if (capRes.ok) {
+        const profile = await capRes.json()
+        if (profile && typeof profile === 'object') {
+          await setCachedProfile(site.id, profile)
+        }
+      }
+    } catch (e) {
+      log.warn({ event: 'capabilities_fetch_failed', siteId: site.id, err: e.message }, 'Capability profile fetch failed (fallback)')
     }
   }
 })
@@ -73,7 +96,13 @@ function getAgentId(url) {
 function buildSystemPrompt(site, siteUrl, message, contextSummary) {
   const isGreeting = message.trim() === '/start'
   const greetingBlock = isGreeting ? `\n\n${GREETING_INSTRUCTION}` : ''
-  return `Ты AI-помощник для сайта ${site.name || siteUrl}.${contextSummary}\n\nПравила:\n${CORE_RULES}\n${greetingBlock}`
+
+  // Mode Router: authoring mode из capability profile (если есть).
+  // Нет профиля = '' (generic prompt, обратная совместимость).
+  const parsed = parseProfile(site?.cached_capabilities)
+  const modeSnippet = parsed?.mode ? `\n\n${getModePromptSnippet(parsed.mode)}` : ''
+
+  return `Ты AI-помощник для сайта ${site.name || siteUrl}.${contextSummary}\n\nПравила:\n${CORE_RULES}${modeSnippet}\n${greetingBlock}`
 }
 
 /**

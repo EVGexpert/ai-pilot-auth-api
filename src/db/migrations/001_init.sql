@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sites (
   cached_structure TEXT,
   cached_soul TEXT,
   cached_at TEXT,
+  cached_capabilities TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id)
