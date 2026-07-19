@@ -32,6 +32,10 @@ export async function getMessagesBySession(sessionId) {
   return await queryAll('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC', [sessionId])
 }
 
+export async function updateSessionTitle(sessionId, title) {
+  await run('UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?', [title, new Date().toISOString(), sessionId])
+}
+
 export async function updateSessionSummary(sessionId) {
   const msgs = await queryAll('SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC', [sessionId])
   if (msgs.length < 12) return false

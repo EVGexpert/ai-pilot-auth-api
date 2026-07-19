@@ -1,4 +1,4 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus, setCachedProfile, parseProfile } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, updateSessionTitle, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus, setCachedProfile, parseProfile } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION, getModePromptSnippet } from '../config/prompt.js'
 import { createLogger } from '../utils/logger.js'
@@ -360,6 +360,11 @@ ${siteMemoryBlock}` : ''
           },
           maxAttempts: 3
         })
+      }
+
+      // Авто-установка заголовка сессии (из первого сообщения пользователя)
+      if (session && (!session.title || session.title === 'Чат') && message.trim().length > 3) {
+        await updateSessionTitle(session.id, message.trim().substring(0, 40)).catch(() => {})
       }
 
       // Авто-обновление session summary (при длинных диалогах)

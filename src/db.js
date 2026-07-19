@@ -14,7 +14,7 @@ export {
   getCachedProfile, setCachedProfile, isProfileFresh, getAuthoringMode, parseProfile,
   createChatSession, findSessionsByUserAndSite, findSessionById,
   findOrCreateSession, createMessage, updateMessageStatus, getMessagesBySession,
-  updateSessionSummary,
+  updateSessionSummary, updateSessionTitle,
   createJob, claimJob, completeJob, failJob, getPendingJobCount,
   registerJobHandler, startWorker, stopWorker,
   createAuditEvent,
