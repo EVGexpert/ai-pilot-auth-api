@@ -99,6 +99,18 @@ if (USE_PG) {
     await _run('INSERT INTO schema_version (version, applied_at) VALUES (12, ?)', [now()])
     ver = 12
   }
+  if (ver < 13) {
+    try { await _run(`CREATE TABLE IF NOT EXISTS agent_ui_cards (
+      id TEXT PRIMARY KEY, site_id TEXT, session_id TEXT, user_id TEXT NOT NULL,
+      kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT,
+      options TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT NOT NULL,
+      idempotency_key TEXT UNIQUE
+    )`) } catch (e) { /* already exists */ }
+    await _run('INSERT INTO schema_version (version, applied_at) VALUES (13, ?)', [now()])
+    ver = 13
+  }
   // Note: migrations 2-4, 6-10 are CREATE TABLE IF NOT EXISTS which are handled by 001_init.sql
 
   log.info({ event: 'pg_migrations', version: ver }, `PostgreSQL migrations: v${ver}`)
@@ -299,6 +311,20 @@ if (USE_PG) {
     await _run('INSERT INTO schema_version (version, applied_at) VALUES (12, ?)', [now()])
     log.info({ event: 'migration_v12' }, 'Migration v12: sites.cached_capabilities added')
     ver = 12
+  }
+  if (ver < 13) {
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_ui_cards (
+      id TEXT PRIMARY KEY, site_id TEXT, session_id TEXT, user_id TEXT NOT NULL,
+      kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT,
+      options TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, resolved_at TEXT, expires_at TEXT NOT NULL,
+      idempotency_key TEXT UNIQUE
+    )`)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_agent_ui_cards_site_session ON agent_ui_cards(site_id, session_id, status, expires_at)')
+    await _run('INSERT INTO schema_version (version, applied_at) VALUES (13, ?)', [now()])
+    log.info({ event: 'migration_v13' }, 'Migration v13: agent_ui_cards table created')
+    ver = 13
   }
 
   // ──── JSON MIGRATION (legacy) ────

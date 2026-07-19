@@ -50,5 +50,9 @@ export {
   updateActionStatus, getActionsBySession
 } from './action_requests.js'
 
+export {
+  createCard, getCard, getActiveCards, resolveCard
+} from './agent_ui_cards.js'
+
 // Дефолтный экспорт — db инстанс (для прямого доступа, если нужен)
 export { default } from './connection.js'

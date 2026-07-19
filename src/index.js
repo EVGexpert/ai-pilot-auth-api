@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit'
 import authRoutes from './routes/auth.js'
 import sitesRoutes from './routes/sites.js'
 import chatRoutes from './routes/chat.js'
+import chatUiRoutes from './routes/chat-ui.js'
 import { config } from './config.js'
 import { getStats, getDbHealth } from './db.js'
 import { queryOne, close as closeDb, ping, DB_MODE } from './db/connection.js'
@@ -94,6 +95,7 @@ await app.register(rateLimit, rateLimitOptions)
 await app.register(authRoutes, { prefix: '/api/auth' })
 await app.register(sitesRoutes, { prefix: '/api/sites' })
 await app.register(chatRoutes, { prefix: '/api/chat' })
+await app.register(chatUiRoutes, { prefix: '/api/chat' })
 
 // Healthcheck — без авторизации, проверяет БД, диск, память
 app.get('/api/health', async () => {

@@ -22,7 +22,8 @@ export {
   revokeAllUserTokens, cleanExpiredTokens,
   getStats, getDbHealth,
   generateActionKey, createActionRequest, findActionByKey,
-  updateActionStatus, getActionsBySession
+  updateActionStatus, getActionsBySession,
+  createCard, getCard, getActiveCards, resolveCard
 } from './db/index.js'
 
 export { default } from './db/index.js'

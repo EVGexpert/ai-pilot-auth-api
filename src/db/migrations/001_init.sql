@@ -141,6 +141,23 @@ CREATE TABLE IF NOT EXISTS action_requests (
   updated_at TEXT NOT NULL
 );
 
+-- Agent UI Cards
+CREATE TABLE IF NOT EXISTS agent_ui_cards (
+  id TEXT PRIMARY KEY,
+  site_id TEXT,
+  session_id TEXT,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  options TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  expires_at TEXT NOT NULL,
+  idempotency_key TEXT UNIQUE
+);
+
 -- Refresh tokens
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id TEXT PRIMARY KEY,
@@ -181,3 +198,4 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session_id, 
 CREATE INDEX IF NOT EXISTS idx_actions_site_status ON action_requests(site_id, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_stale ON jobs(status, locked_at);
+CREATE INDEX IF NOT EXISTS idx_agent_ui_cards_site_session ON agent_ui_cards(site_id, session_id, status, expires_at);
