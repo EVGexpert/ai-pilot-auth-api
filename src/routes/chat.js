@@ -280,7 +280,7 @@ ${siteMemoryBlock}` : ''
     if (!gatewayToken) {
       gatewayToken = process.env.GATEWAY_TOKEN || process.env.VITE_GATEWAY_TOKEN || ''
     }
-    if (!gatewayToken || gatewayToken === 'dev-gateway-token') {
+    if (!gatewayToken) {
       return reply.status(500).send({ error: 'GATEWAY_TOKEN не настроен' })
     }
 
