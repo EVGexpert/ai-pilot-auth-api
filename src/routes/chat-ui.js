@@ -20,7 +20,7 @@ export default async function chatUiRoutes(app) {
     const err = authGuard(request, reply)
     if (err) return err
 
-    const { site_id, session_id, kind, title, description, options, ttl_seconds } = request.body || {}
+    const { site_id, site_url, session_id, kind, title, description, options, ttl_seconds } = request.body || {}
     if (!kind || !title) {
       return reply.status(400).send({ error: 'kind и title обязательны' })
     }
@@ -28,8 +28,16 @@ export default async function chatUiRoutes(app) {
       return reply.status(400).send({ error: `Invalid kind. Must be one of: ${VALID_KINDS.join(', ')}` })
     }
 
+    // Resolve site_url → site_id if needed
+    let resolvedSiteId = site_id
+    if (!resolvedSiteId && site_url) {
+      const site = await findSiteByUserAndUrl(request.user.sub, site_url)
+      if (!site) return reply.status(404).send({ error: 'Сайт не найден' })
+      resolvedSiteId = site.id
+    }
+
     const card = await createCard({
-      siteId: site_id,
+      siteId: resolvedSiteId,
       sessionId: session_id,
       userId: request.user.sub,
       kind,
