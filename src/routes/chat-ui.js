@@ -1,4 +1,4 @@
-import { createCard, getActiveCards, resolveCard } from '../db.js'
+import { createCard, getActiveCards, resolveCard, findSiteByUserAndUrl } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { createLogger } from '../utils/logger.js'
 
@@ -46,12 +46,24 @@ export default async function chatUiRoutes(app) {
     const err = authGuard(request, reply)
     if (err) return err
 
-    const { site_id, session_id } = request.query
-    if (!site_id || !session_id) {
-      return reply.status(400).send({ error: 'site_id и session_id обязательны' })
+    const { site_id, site_url, session_id } = request.query
+    if (!session_id) {
+      return reply.status(400).send({ error: 'session_id обязателен' })
+    }
+    if (!site_id && !site_url) {
+      return reply.status(400).send({ error: 'site_id или site_url обязательны' })
     }
 
-    const cards = await getActiveCards({ siteId: site_id, sessionId: session_id })
+    let resolvedSiteId = site_id
+    if (!resolvedSiteId && site_url) {
+      const site = await findSiteByUserAndUrl(request.user.sub, site_url)
+      if (!site) {
+        return reply.status(404).send({ error: 'Сайт не найден' })
+      }
+      resolvedSiteId = site.id
+    }
+
+    const cards = await getActiveCards({ siteId: resolvedSiteId, sessionId: session_id })
     return reply.send({ cards })
   })
 
