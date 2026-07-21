@@ -1,83 +1,14 @@
-import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, registerJobHandler, getConfigValue, updateSessionSummary, updateSessionTitle, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus, setCachedProfile, parseProfile } from '../db.js'
+import { findSitesByUser, findSiteByUserAndUrl, findSiteById, updateSiteCache, findOrCreateSession, findSessionById, findSessionsByUserAndSite, createChatSession, createMessage, updateMessageStatus, getMessagesBySession, createJob, createAuditEvent, getConfigValue, updateSessionSummary, updateSessionTitle, formatSiteMemory, setSiteMemory, generateActionKey, createActionRequest, findActionByKey, updateActionStatus, parseProfile } from '../db.js'
 import { verifyToken } from '../middleware/auth.js'
 import { CORE_RULES, GREETING_INSTRUCTION, getModePromptSnippet } from '../config/prompt.js'
 import { createLogger } from '../utils/logger.js'
+import { fetchWithTimeout } from '../utils/fetch.js'
+import { parseActions } from '../utils/actions.js'
+
+// Side-effect import: registers background job handlers (refresh_context, sync_wp_memory)
+import '../jobs/background-jobs.js'
 
 const log = createLogger('chat')
-
-/** Хелпер: fetch с таймаутом */
-async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(url, { ...options, signal: controller.signal })
-    return res
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-// Регистрируем обработчики для фоновых задач
-registerJobHandler('refresh_context', async (job) => {
-  const { siteUrl, apiToken } = JSON.parse(job.payload_json)
-  if (!apiToken || apiToken === 'pending') return
-  const base = siteUrl.replace(/\/+$/, '')
-  const site = await findSiteByUserAndUrl(job.user_id, siteUrl)
-
-  // 1) Site context (structure + soul) — существующий flow
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 3000)
-  const ctxRes = await fetch(
-    base + '/wp-json/aipilot/v1/agent/context',
-    { headers: { 'X-AI-Pilot-Token': apiToken }, signal: controller.signal }
-  )
-  clearTimeout(timeout)
-  if (ctxRes.ok) {
-    const ctx = await ctxRes.json()
-    if (site) {
-      await updateSiteCache(site.id, {
-        cached_structure: JSON.stringify(ctx.structure || ctx),
-        cached_soul: JSON.stringify(ctx.soul || {}),
-        cached_at: new Date().toISOString()
-      })
-    }
-  }
-
-  // 2) Capability profile (GET /agent/capabilities) — Mode Router
-  //    Fallback: 404/5xx/таймаут = старый плагин, работаем как раньше.
-  if (site) {
-    try {
-      const capRes = await fetchWithTimeout(
-        base + '/wp-json/aipilot/v1/agent/capabilities',
-        { headers: { 'X-AI-Pilot-Token': apiToken } },
-        3000
-      )
-      if (capRes.ok) {
-        const profile = await capRes.json()
-        if (profile && typeof profile === 'object') {
-          await setCachedProfile(site.id, profile)
-        }
-      }
-    } catch (e) {
-      log.warn({ event: 'capabilities_fetch_failed', siteId: site.id, err: e.message }, 'Capability profile fetch failed (fallback)')
-    }
-  }
-})
-
-registerJobHandler('sync_wp_memory', async (job) => {
-  const { siteUrl, apiToken, message, response, agentId } = JSON.parse(job.payload_json)
-  if (!apiToken || apiToken === 'pending') return
-  const memoryUrl = siteUrl.replace(/\/+$/, '') + '/wp-json/aipilot/v1/agent/memory'
-  const resp = await fetchWithTimeout(memoryUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-AI-Pilot-Token': apiToken },
-    body: JSON.stringify({
-      action: 'client_message', summary: message.slice(0, 200),
-      details: { response: (response || '').slice(0, 500), agentId }, agent: 'client'
-    })
-  }, 5000)
-  if (!resp.ok) throw new Error('WP memory sync: ' + resp.status)
-})
 
 function authGuard(request, reply) {
   const auth = request.headers.authorization
@@ -103,86 +34,6 @@ function buildSystemPrompt(site, siteUrl, message, contextSummary) {
   const modeSnippet = parsed?.mode ? `\n\n${getModePromptSnippet(parsed.mode)}` : ''
 
   return `Ты AI-помощник для сайта ${site.name || siteUrl}.${contextSummary}\n\nПравила:\n${CORE_RULES}${modeSnippet}\n${greetingBlock}`
-}
-
-/**
- * JSON Schema для валидации структурированного действия от модели.
- */
-const ACTION_SCHEMA = {
-  type: 'object',
-  required: ['type', 'target', 'patch'],
-  properties: {
-    type: { type: 'string', enum: ['create_post', 'update_post', 'delete_post', 'create_page', 'update_page', 'delete_page', 'update_option', 'update_theme', 'update_menu', 'other'] },
-    target: { type: 'object', properties: { title: { type: 'string' }, id: { type: ['number', 'string'] }, slug: { type: 'string' } } },
-    patch: { type: 'object' },
-    requires_approval: { type: 'boolean', default: true }
-  }
-}
-
-const ACTION_RESPONSE_SCHEMA = {
-  type: 'object',
-  required: ['answer', 'actions'],
-  properties: {
-    answer: { type: 'string' },
-    actions: {
-      type: 'array',
-      items: ACTION_SCHEMA
-    }
-  }
-}
-
-/**
- * Простая валидация JSON по схеме.
- */
-function validateActionJson(data) {
-  if (!data || typeof data !== 'object') return false
-  if (!Array.isArray(data.actions) || data.actions.length === 0) return false
-  for (const action of data.actions) {
-    if (!action.type || !action.target) return false
-    if (!['create_post', 'update_post', 'delete_post', 'create_page', 'update_page', 'delete_page', 'update_option', 'update_theme', 'update_menu', 'other'].includes(action.type)) return false
-  }
-  return true
-}
-
-/**
- * Парсит структурированный JSON из ответа модели.
- * Ищет блок ```action ...``` или ```json ...``` в ответе.
- */
-function parseStructuredActions(content) {
-  // Пробуем найти блок ```action или ```json
-  const blockMatch = content.match(/```(?:action|json)\s*([\s\S]*?)```/)
-  if (!blockMatch) return null
-  try {
-    const data = JSON.parse(blockMatch[1])
-    if (!validateActionJson(data)) return null
-    return data
-  } catch (e) {
-    return null
-  }
-}
-
-/**
- * Парсит структурированные действия из ответа модели (```action ... ```).
- * Эвристика отключена — только явный JSON.
- *
- * @param {string} content - ответ модели
- * @returns {{ actions: Array|null, cleanContent: string }}
- */
-function parseActions(content) {
-  const structured = parseStructuredActions(content)
-  // Только структурированный JSON — эвристика отключена
-  if (!structured || !validateActionJson(structured)) return null
-
-  const cleanContent = content.replace(/```(?:action|json)\s*[\s\S]*?```/g, '').trim()
-  const actions = structured.actions.map(a => ({
-    id: 'ap_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-    title: a.type.replace(/_/g, ' ') + (a.target?.title ? ': ' + a.target.title : ''),
-    description: 'Тип: ' + a.type + (a.target?.slug ? ', цель: ' + a.target.slug : ''),
-    diff: Object.entries(a.patch || {}).map(([k, v]) => '+ ' + k + ': ' + String(v).slice(0, 80)),
-    status: 'pending',
-    raw: { type: a.type, target: a.target, patch: a.patch }
-  }))
-  return { actions, cleanContent }
 }
 
 export default async function chatRoutes(app) {

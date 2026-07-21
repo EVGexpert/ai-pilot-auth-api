@@ -2,23 +2,13 @@ import { findSitesByUser, findSiteByUserAndUrl, findSiteById, createSite, delete
 import { config } from '../config.js'
 import { authMiddleware } from '../middleware/auth.js'
 import { createLogger } from '../utils/logger.js'
+import { fetchWithTimeout } from '../utils/fetch.js'
 
 const log = createLogger('sites')
 
 // ============================================================
 // Хелперы
 // ============================================================
-
-/** fetch с таймаутом */
-async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(url, { ...options, signal: controller.signal })
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 function isAdmin(request) {
   return request.user?.role === 'admin'
